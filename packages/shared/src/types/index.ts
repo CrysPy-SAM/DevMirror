@@ -5,6 +5,33 @@
 
 export type SupportedFramework = 'vite' | 'nextjs' | 'angular' | 'vanilla' | 'unknown';
 
+export type DetectedFramework =
+  | 'vite'
+  | 'nextjs'
+  | 'angular'
+  | 'cra'
+  | 'astro'
+  | 'nuxt'
+  | 'vanilla'
+  | 'generic'
+  | 'unknown';
+
+export type DetectionConfidence = 'high' | 'medium' | 'low';
+
+export interface DiscoveredDevServer {
+  host: string;
+  port: number;
+  url: string;
+  framework: DetectedFramework;
+  frameworkName: string;
+  processId?: number;
+  processName?: string;
+  status: 'online' | 'unreachable';
+  confidence: DetectionConfidence;
+  title?: string;
+  isHttps: boolean;
+}
+
 export type DeviceType = 'ios' | 'android' | 'desktop' | 'unknown';
 
 export type DevicePairingMode = 'auto-trust' | 'pairing-guard';

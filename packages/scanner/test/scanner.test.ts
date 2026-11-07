@@ -1,0 +1,172 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import http from 'node:http';
+import { DevServerScanner } from '../src/scanner.js';
+import type { DiscoveredDevServer } from '@devmirror/shared';
+
+describe('DevServerScanner', () => {
+  let viteServer: http.Server;
+  let nextServer: http.Server;
+  let staticServer: http.Server;
+
+  let vitePort: number;
+  let nextPort: number;
+  let staticPort: number;
+
+  beforeEach(async () => {
+    // 1. Vite Mock Server
+    viteServer = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        Server: 'vite/5.0.0'
+      });
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>My Vite React App</title>
+            <script type="module" src="/@vite/client"></script>
+          </head>
+          <body><div id="root"></div></body>
+        </html>
+      `);
+    });
+
+    // 2. Next.js Mock Server
+    nextServer = http.createServer((_req, res) => {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'X-Powered-By': 'Next.js'
+      });
+      res.end(`
+        <!DOCTYPE html>
+        <html>
+          <head><title>My Next.js Portal</title></head>
+          <body>
+            <div id="__next"></div>
+            <script id="__NEXT_DATA__" type="application/json">{}</script>
+          </body>
+        </html>
+      `);
+    });
+
+    // 3. Static/Generic Server
+    staticServer = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!DOCTYPE html><html><head><title>Static Documentation</title></head><body>Docs</body></html>');
+    });
+
+    await Promise.all([
+      new Promise<void>((resolve) => viteServer.listen(0, '127.0.0.1', () => {
+        vitePort = (viteServer.address() as any).port;
+        resolve();
+      })),
+      new Promise<void>((resolve) => nextServer.listen(0, '127.0.0.1', () => {
+        nextPort = (nextServer.address() as any).port;
+        resolve();
+      })),
+      new Promise<void>((resolve) => staticServer.listen(0, '127.0.0.1', () => {
+        staticPort = (staticServer.address() as any).port;
+        resolve();
+      }))
+    ]);
+  });
+
+  afterEach(async () => {
+    await Promise.all([
+      new Promise<void>((resolve) => viteServer.close(() => resolve())),
+      new Promise<void>((resolve) => nextServer.close(() => resolve())),
+      new Promise<void>((resolve) => staticServer.close(() => resolve()))
+    ]);
+  });
+
+  it('should scan specific ports and fingerprint frameworks correctly', async () => {
+    const scanner = new DevServerScanner();
+    const discovered = await scanner.scan({
+      host: '127.0.0.1',
+      ports: [vitePort, nextPort, staticPort],
+      includeProcessInfo: false,
+      timeoutMs: 500
+    });
+
+    expect(discovered.length).toBe(3);
+
+    const vite = discovered.find((s) => s.port === vitePort);
+    expect(vite).toBeDefined();
+    expect(vite?.framework).toBe('vite');
+    expect(vite?.frameworkName).toBe('Vite');
+    expect(vite?.title).toBe('My Vite React App');
+    expect(vite?.confidence).toBe('high');
+    expect(vite?.url).toBe(`http://127.0.0.1:${vitePort}`);
+
+    const next = discovered.find((s) => s.port === nextPort);
+    expect(next).toBeDefined();
+    expect(next?.framework).toBe('nextjs');
+    expect(next?.frameworkName).toBe('Next.js');
+    expect(next?.title).toBe('My Next.js Portal');
+    expect(next?.confidence).toBe('high');
+
+    const generic = discovered.find((s) => s.port === staticPort);
+    expect(generic).toBeDefined();
+    expect(generic?.framework).toBe('generic');
+    expect(generic?.confidence).toBe('low');
+    expect(generic?.title).toBe('Static Documentation');
+  });
+
+  it('should sort discovered servers by confidence descending, then port ascending', async () => {
+    const scanner = new DevServerScanner();
+    const discovered = await scanner.scan({
+      ports: [staticPort, vitePort, nextPort],
+      includeProcessInfo: false,
+      timeoutMs: 500
+    });
+
+    // High confidence servers (Vite, Next.js) should appear before low confidence (Generic)
+    expect(discovered[0].confidence).toBe('high');
+    expect(discovered[1].confidence).toBe('high');
+    expect(discovered[2].confidence).toBe('low');
+    expect(discovered[2].framework).toBe('generic');
+  });
+
+  it('should support scanning port ranges', async () => {
+    const scanner = new DevServerScanner();
+    const minPort = Math.min(vitePort, nextPort);
+    const maxPort = Math.max(vitePort, nextPort);
+
+    // If difference is small enough, scan the range
+    if (maxPort - minPort <= 50) {
+      const discovered = await scanner.scan({
+        portRange: { start: minPort, end: maxPort },
+        includeProcessInfo: false,
+        timeoutMs: 200,
+        concurrency: 20
+      });
+
+      const foundVite = discovered.some((s) => s.port === vitePort);
+      const foundNext = discovered.some((s) => s.port === nextPort);
+      expect(foundVite).toBe(true);
+      expect(foundNext).toBe(true);
+    } else {
+      // Range test with narrow slice around vitePort
+      const discovered = await scanner.scan({
+        portRange: { start: vitePort, end: vitePort },
+        includeProcessInfo: false,
+        timeoutMs: 200
+      });
+      expect(discovered.length).toBe(1);
+      expect(discovered[0].port).toBe(vitePort);
+    }
+  });
+
+  it('should ignore closed ports gracefully', async () => {
+    const scanner = new DevServerScanner();
+    const closedPort = 65431;
+    const discovered = await scanner.scan({
+      ports: [vitePort, closedPort],
+      includeProcessInfo: false,
+      timeoutMs: 200
+    });
+
+    expect(discovered.length).toBe(1);
+    expect(discovered[0].port).toBe(vitePort);
+  });
+});

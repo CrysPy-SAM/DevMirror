@@ -14,15 +14,20 @@ export const CONTROL_API_AUTH_HEADER = 'x-devmirror-token';
 export const CONTROL_API_CSRF_HEADER = 'x-devmirror-csrf';
 
 export const COMMON_DEV_PORTS = [
-  5173, // Vite
   3000, // Next.js / CRA / Nuxt
-  8080, // Webpack / Vue CLI
+  3001, // Next.js / CRA fallback
+  4000, // Express / DevMirror proxy default
+  4173, // Vite preview
   4200, // Angular CLI
-  8000, // Django / Astro / Python
-  5000, // Serve / SvelteKit
   4321, // Astro
+  5000, // Serve / SvelteKit
+  5173, // Vite default
+  5174, // Vite fallback
   5500, // VS Code Live Server
-  1234  // Parcel
+  8000, // Django / Astro / Python
+  8080, // Webpack / Vue CLI
+  8081, // Webpack fallback
+  9000  // PHP / Webpack / Gulp
 ] as const;
 
 export const FRAMEWORK_HMR_PATHS = {
