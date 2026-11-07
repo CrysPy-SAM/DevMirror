@@ -1,0 +1,32 @@
+{
+  "name": "@devmirror/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DevMirror CLI - Instant mobile preview for local web development",
+  "bin": {
+    "devmirror": "./bin/devmirror.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "clean": "node -e \"try { require('fs').rmSync('dist', { recursive: true, force: true }); } catch {}\""
+  },
+  "dependencies": {
+    "@devmirror/core": "workspace:*",
+    "@devmirror/scanner": "workspace:*",
+    "@devmirror/shared": "workspace:*",
+    "chalk": "^5.4.1",
+    "ora": "^8.1.1",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/qrcode-terminal": "^0.12.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -4,9 +4,13 @@
   "private": true,
   "description": "Zero-config mobile browser preview with preserved HMR for local web development",
   "packageManager": "pnpm@10.15.0",
+  "bin": {
+    "devmirror": "./packages/cli/bin/devmirror.js"
+  },
   "scripts": {
     "build": "pnpm -r run build",
     "dev": "pnpm --filter @devmirror/cli run dev",
+    "devmirror": "node packages/cli/bin/devmirror.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "pnpm -r run lint",

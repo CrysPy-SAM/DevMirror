@@ -3,7 +3,16 @@
  * Core domain models, session definitions, and configuration schemas.
  */
 
-export type SupportedFramework = 'vite' | 'nextjs' | 'angular' | 'vanilla' | 'unknown';
+export type SupportedFramework =
+  | 'vite'
+  | 'nextjs'
+  | 'angular'
+  | 'vanilla'
+  | 'cra'
+  | 'astro'
+  | 'nuxt'
+  | 'generic'
+  | 'unknown';
 
 export type DetectedFramework =
   | 'vite'
@@ -40,6 +49,7 @@ export interface TargetDevServer {
   host: string;
   port: number;
   framework: SupportedFramework;
+  frameworkName?: string;
   pid?: number;
   cwd?: string;
   command?: string;
