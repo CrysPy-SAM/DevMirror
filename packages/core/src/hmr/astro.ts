@@ -1,0 +1,34 @@
+/**
+ * @devmirror/core - Astro HMR Adapter
+ * Handles Astro dev server WebSocket and Vite HMR protocol connections (/@vite-hmr).
+ */
+
+import type { TargetDevServer } from '@devmirror/shared';
+import type { IHmrAdapter } from './types.js';
+
+export class AstroHmrAdapter implements IHmrAdapter {
+  public readonly framework = 'astro' as const;
+
+  public matches(urlPath: string): boolean {
+    const cleanPath = urlPath.split('?')[0];
+    return cleanPath === '/@vite-hmr' || cleanPath === '/' || cleanPath === '' || cleanPath.startsWith('/_astro');
+  }
+
+  public normalizeHeaders(
+    headers: Record<string, string | string[] | undefined>,
+    target: TargetDevServer
+  ): Record<string, string> {
+    const normalized: Record<string, string> = {};
+
+    for (const [key, value] of Object.entries(headers)) {
+      if (value !== undefined) {
+        normalized[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : String(value);
+      }
+    }
+
+    normalized['host'] = `${target.host}:${target.port}`;
+    delete normalized['origin'];
+
+    return normalized;
+  }
+}
