@@ -86,20 +86,22 @@ export class DevMirrorEngine {
       lanIp: this.activeLanIp,
       proxyPort,
       allowedExtensionIds: this.options.allowedExtensionIds,
-      onDiscover: this.options.onDiscover
+      onDiscover: this.options.onDiscover,
+      onTargetChange: async (target) => {
+        await this.setTarget(target);
+      },
+      onSessionRevoke: async () => {
+        if (this.proxyServer) {
+          this.proxyServer.closeActiveSockets();
+        }
+      }
     });
     await this.controlApi.start();
+    this.activeControlPort = this.controlApi.assignedPort;
 
     // 4. If target is provided, create session and start LAN Proxy
     let session: SessionInfo | null = null;
     if (this.options.target) {
-      session = this.sessionManager.createSession({
-        target: this.options.target,
-        lanIp: this.activeLanIp,
-        proxyPort,
-        controlPort
-      });
-
       this.proxyServer = new LanProxyServer({
         port: proxyPort,
         host: '0.0.0.0',
@@ -108,6 +110,14 @@ export class DevMirrorEngine {
         enableOverlay: this.options.enableOverlay ?? false
       });
       await this.proxyServer.start();
+      this.activeProxyPort = this.proxyServer.assignedPort;
+
+      session = this.sessionManager.createSession({
+        target: this.options.target,
+        lanIp: this.activeLanIp,
+        proxyPort: this.activeProxyPort,
+        controlPort: this.activeControlPort
+      });
     }
 
     this.isRunning = true;
