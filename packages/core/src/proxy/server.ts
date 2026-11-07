@@ -101,6 +101,16 @@ export class LanProxyServer {
   }
 
   /**
+   * Safely strips dm_token from path without re-encoding existing query parameters.
+   */
+  private stripTokenFromPath(urlPath: string): string {
+    const stripped = urlPath
+      .replace(new RegExp(`([?&])${SESSION_QUERY_PARAM}=[^&#]*(&|$)`), '$1')
+      .replace(/[?&]$/, '');
+    return stripped.length > 0 ? stripped : '/';
+  }
+
+  /**
    * Core HTTP request dispatcher.
    */
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
@@ -114,11 +124,10 @@ export class LanProxyServer {
       if (this.sessionManager.validateToken(queryToken)) {
         this.sessionManager.registerDevice({ ip: clientIp, userAgent });
 
-        reqUrl.searchParams.delete(SESSION_QUERY_PARAM);
-        const redirectPath = reqUrl.pathname + reqUrl.search;
+        const redirectPath = this.stripTokenFromPath(req.url || '/');
 
         res.writeHead(302, {
-          Location: redirectPath.length > 0 ? redirectPath : '/',
+          Location: redirectPath,
           'Set-Cookie': `${SESSION_COOKIE_NAME}=${encodeURIComponent(queryToken)}; Path=/; HttpOnly; SameSite=Lax`,
           'Cache-Control': 'no-store'
         });
@@ -168,11 +177,12 @@ export class LanProxyServer {
     if (forwardedHeaders.referer) {
       try {
         const refUrl = new URL(forwardedHeaders.referer as string);
+        refUrl.searchParams.delete(SESSION_QUERY_PARAM);
         refUrl.protocol = isTargetHttps ? 'https:' : 'http:';
         refUrl.host = `${this.target.host}:${this.target.port}`;
         forwardedHeaders.referer = refUrl.toString();
       } catch {
-        // ignore
+        delete forwardedHeaders.referer;
       }
     }
 
@@ -180,10 +190,13 @@ export class LanProxyServer {
     forwardedHeaders['x-forwarded-host'] = req.headers.host || `${this.host}:${this.port}`;
     forwardedHeaders['x-forwarded-proto'] = 'http';
 
+    // Strip pairing token from path so it is never forwarded to target dev server
+    const sanitizedPath = this.stripTokenFromPath(req.url || '/');
+
     const requestOptions: http.RequestOptions = {
       hostname: this.target.host,
       port: this.target.port,
-      path: parsedUrl.pathname + parsedUrl.search,
+      path: sanitizedPath,
       method: req.method,
       headers: forwardedHeaders,
       timeout: 30000
@@ -320,18 +333,35 @@ export class LanProxyServer {
       forwardedHeaders['sec-websocket-protocol'] = req.headers['sec-websocket-protocol'] as string;
     }
 
+    const isTargetHttps = this.target.isHttps;
+    const httpModule = isTargetHttps ? https : http;
+
+    // Sanitize Referer to prevent pairing token leakage
+    if (forwardedHeaders.referer) {
+      try {
+        const refUrl = new URL(forwardedHeaders.referer as string);
+        refUrl.searchParams.delete(SESSION_QUERY_PARAM);
+        refUrl.protocol = isTargetHttps ? 'https:' : 'http:';
+        refUrl.host = `${this.target.host}:${this.target.port}`;
+        forwardedHeaders.referer = refUrl.toString();
+      } catch {
+        delete forwardedHeaders.referer;
+      }
+    }
+
     forwardedHeaders['connection'] = 'Upgrade';
     forwardedHeaders['upgrade'] = 'websocket';
 
-    const isTargetHttps = this.target.isHttps;
-    const httpModule = isTargetHttps ? https : http;
+    // Strip pairing token from path so it is never forwarded to target dev server
+    const sanitizedWsPath = this.stripTokenFromPath(req.url || '/');
 
     const upstreamReq = httpModule.request({
       hostname: this.target.host,
       port: this.target.port,
-      path: req.url,
+      path: sanitizedWsPath,
       method: 'GET',
       headers: forwardedHeaders,
+      agent: false,
       timeout: 30000
     });
 
@@ -372,6 +402,21 @@ export class LanProxyServer {
       // Pipe bidirectionally
       clientSocket.pipe(upstreamSocket);
       upstreamSocket.pipe(clientSocket);
+    });
+
+    // Handle non-101 responses from upstream (e.g. upstream rejected upgrade)
+    upstreamReq.on('response', (upstreamRes) => {
+      let rawResponse = `HTTP/1.1 ${upstreamRes.statusCode || 400} ${upstreamRes.statusMessage || ''}\r\n`;
+      for (const [key, val] of Object.entries(upstreamRes.headers)) {
+        if (Array.isArray(val)) {
+          for (const v of val) rawResponse += `${key}: ${v}\r\n`;
+        } else if (val !== undefined) {
+          rawResponse += `${key}: ${val}\r\n`;
+        }
+      }
+      rawResponse += '\r\n';
+      clientSocket.write(rawResponse);
+      clientSocket.destroy();
     });
 
     upstreamReq.on('error', (err) => {

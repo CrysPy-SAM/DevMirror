@@ -29,9 +29,8 @@ export class ViteHmrAdapter implements IHmrAdapter {
     // Rewrite Host to target
     normalized['host'] = `${target.host}:${target.port}`;
 
-    // Normalize Origin to match target server protocol & host
-    const scheme = target.isHttps ? 'https' : 'http';
-    normalized['origin'] = `${scheme}://${target.host}:${target.port}`;
+    // Note: Do not inject artificial Origin if client did not send one, or let Vite accept local target
+    delete normalized['origin'];
 
     return normalized;
   }

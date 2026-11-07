@@ -111,7 +111,7 @@ describe('LanProxyServer - HTML Rewriting & Pass-through', () => {
 
     expect(text).toContain('<!-- [DevMirror Injected Companion] -->');
     expect(text).toContain('window.__DEVMIRROR__ = Object.freeze({"proxyPort":' + proxyPort + ',"targetPort":' + targetPort + ',"framework":"vite"});');
-    expect(text).toContain('<script src="/__devmirror/companion.js" defer></script>');
+    expect(text).toContain('src="/__devmirror/companion.js"');
     expect(text.indexOf('__devmirror/companion.js')).toBeLessThan(text.indexOf('</head>'));
   });
 
