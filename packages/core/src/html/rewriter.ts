@@ -18,6 +18,7 @@ export interface HtmlRewriterOptions {
   proxyPort: number;
   targetPort: number;
   framework: SupportedFramework;
+  proxyHost?: string;
 }
 
 export interface RewriteResult {
@@ -37,20 +38,30 @@ export class HtmlRewriter {
   }
 
   /**
-   * Extracts an existing cryptographic nonce from a CSP header if one is already present.
+   * Extracts an existing cryptographic nonce from CSP headers if one is already present.
+   * Handles both single policy strings and arrays of policies.
    */
-  public static extractExistingNonce(cspHeader: string): string | null {
-    const match = cspHeader.match(/script-src[^;]*'nonce-([A-Za-z0-9+/=_-]+)'/i);
-    return match ? match[1] : null;
+  public static extractExistingNonce(cspHeader: string | string[] | undefined): string | null {
+    if (!cspHeader) return null;
+    const policies = Array.isArray(cspHeader) ? cspHeader : [cspHeader];
+
+    for (const policy of policies) {
+      const match = policy.match(/script-src[^;]*'nonce-([A-Za-z0-9+/=_-]+)'/i);
+      if (match) return match[1];
+    }
+
+    return null;
   }
 
   /**
-   * Patches Content-Security-Policy without unnecessarily weakening security:
-   * - Uses a cryptographic nonce ('nonce-<nonce>') instead of 'unsafe-inline'.
-   * - Preserves all existing CSP directives.
-   * - Only augments script-src with 'self' and the nonce, and connect-src with ws: and wss:.
+   * Patches Content-Security-Policy with the narrowest possible scope:
+   * - Uses a cryptographic nonce ('nonce-<nonce>') ONLY. Never adds 'unsafe-inline'.
+   * - Never injects 'self' into script-src unless 'self' was already authorized, preventing policy broadening.
+   * - Scopes connect-src strictly to the exact DevMirror WebSocket origin (ws://<proxyHost>),
+   *   avoiding wildcard ws: or wss: permissions.
+   * - Preserves all existing directives and directives' order.
    */
-  public static patchCsp(cspHeader: string, nonce: string): string {
+  public static patchCsp(cspHeader: string, nonce: string, targetWsOrigin: string): string {
     const directives = cspHeader.split(';').map((d) => d.trim()).filter(Boolean);
 
     let hasScriptSrc = false;
@@ -65,24 +76,16 @@ export class HtmlRewriter {
         if (!updated.includes(nonceDirective)) {
           updated += ` ${nonceDirective}`;
         }
-        if (!updated.includes("'self'")) {
-          updated += " 'self'";
-        }
+        // Do NOT add 'self' or 'unsafe-inline'
         return updated;
       }
 
-      // 2. Connect directive (WebSocket connection)
+      // 2. Connect directive (targeted WebSocket connection only)
       if (/^connect-src\b/i.test(directive)) {
         hasConnectSrc = true;
         let updated = directive;
-        if (!updated.includes('ws:')) {
-          updated += ' ws:';
-        }
-        if (!updated.includes('wss:')) {
-          updated += ' wss:';
-        }
-        if (!updated.includes("'self'")) {
-          updated += " 'self'";
+        if (!updated.includes(targetWsOrigin)) {
+          updated += ` ${targetWsOrigin}`;
         }
         return updated;
       }
@@ -91,10 +94,12 @@ export class HtmlRewriter {
     });
 
     if (!hasScriptSrc) {
-      updatedDirectives.push(`script-src 'self' ${nonceDirective}`);
+      // If no script-src exists, authorize strictly the nonce
+      updatedDirectives.push(`script-src ${nonceDirective}`);
     }
     if (!hasConnectSrc) {
-      updatedDirectives.push("connect-src 'self' ws: wss:");
+      // If no connect-src exists, authorize strictly 'self' and the exact WebSocket origin
+      updatedDirectives.push(`connect-src 'self' ${targetWsOrigin}`);
     }
 
     return updatedDirectives.join('; ');
@@ -103,18 +108,18 @@ export class HtmlRewriter {
   /**
    * Patches any <meta http-equiv="Content-Security-Policy" content="..."> tags in the HTML string.
    */
-  public static patchMetaCsp(html: string, nonce: string): string {
+  public static patchMetaCsp(html: string, nonce: string, targetWsOrigin: string): string {
     return html.replace(
       /(<meta\s+[^>]*http-equiv=["']Content-Security-Policy["'][^>]*content=["'])([^"']+)(["'][^>]*>)/gi,
       (_match, prefix, content, suffix) => {
-        const patchedContent = HtmlRewriter.patchCsp(content, nonce);
+        const patchedContent = HtmlRewriter.patchCsp(content, nonce, targetWsOrigin);
         return `${prefix}${patchedContent}${suffix}`;
       }
     );
   }
 
   /**
-   * Generates safe companion script tags to inject with optional cryptographic nonce.
+   * Generates safe companion script tags to inject with cryptographic nonce.
    */
   public generateInjectionPayload(nonce?: string): string {
     const safeConfig = {
@@ -135,10 +140,10 @@ export class HtmlRewriter {
   /**
    * Injects the script snippet before </head>, </body>, or at the end.
    */
-  public injectScript(html: string, nonce?: string): string {
+  public injectScript(html: string, nonce?: string, targetWsOrigin?: string): string {
     let workingHtml = html;
-    if (nonce) {
-      workingHtml = HtmlRewriter.patchMetaCsp(workingHtml, nonce);
+    if (nonce && targetWsOrigin) {
+      workingHtml = HtmlRewriter.patchMetaCsp(workingHtml, nonce, targetWsOrigin);
     }
 
     const payload = this.generateInjectionPayload(nonce);
@@ -184,7 +189,8 @@ export class HtmlRewriter {
    */
   public async process(
     rawBuffer: Buffer,
-    rawHeaders: Record<string, string | number | string[] | undefined>
+    rawHeaders: Record<string, string | number | string[] | undefined>,
+    hostContext?: string
   ): Promise<RewriteResult> {
     const headers: Record<string, string | number | string[]> = {};
     for (const [k, v] of Object.entries(rawHeaders)) {
@@ -219,16 +225,20 @@ export class HtmlRewriter {
       const decompressedBuffer = await this.decompress(rawBuffer, contentEncoding);
       const htmlText = decompressedBuffer.toString('utf-8');
 
-      // Determine nonce strategy:
-      // Reuse existing nonce if present in CSP; otherwise generate a fresh CSPRNG nonce
-      const existingCsp = headers['content-security-policy']
-        ? String(headers['content-security-policy'])
-        : undefined;
+      // Determine the exact, narrow WebSocket target origin (ws://<host>)
+      const effectiveHost =
+        hostContext ||
+        this.options.proxyHost ||
+        (headers['host'] ? String(headers['host']) : `127.0.0.1:${this.options.proxyPort}`);
+      const targetWsOrigin = `ws://${effectiveHost}`;
 
-      const detectedNonce = existingCsp ? HtmlRewriter.extractExistingNonce(existingCsp) : null;
+      // Determine nonce strategy:
+      // Reuse existing nonce if present in any CSP policy; otherwise generate a fresh CSPRNG nonce
+      const existingCsp = headers['content-security-policy'] as string | string[] | undefined;
+      const detectedNonce = HtmlRewriter.extractExistingNonce(existingCsp);
       const nonceToUse = detectedNonce || crypto.randomBytes(16).toString('base64');
 
-      const transformedHtml = this.injectScript(htmlText, nonceToUse);
+      const transformedHtml = this.injectScript(htmlText, nonceToUse, targetWsOrigin);
       const transformedBuffer = Buffer.from(transformedHtml, 'utf-8');
 
       // Update headers:
@@ -237,19 +247,32 @@ export class HtmlRewriter {
       delete headers['transfer-encoding'];
       headers['content-length'] = transformedBuffer.byteLength;
 
-      // Handle CSP and CSP-Report-Only separately
+      // Handle multiple CSP headers (arrays) and single strings separately
       if (headers['content-security-policy']) {
-        headers['content-security-policy'] = HtmlRewriter.patchCsp(
-          String(headers['content-security-policy']),
-          nonceToUse
-        );
+        const raw = headers['content-security-policy'];
+        if (Array.isArray(raw)) {
+          headers['content-security-policy'] = raw.map((policy) =>
+            HtmlRewriter.patchCsp(String(policy), nonceToUse, targetWsOrigin)
+          );
+        } else {
+          headers['content-security-policy'] = HtmlRewriter.patchCsp(String(raw), nonceToUse, targetWsOrigin);
+        }
       }
 
+      // Handle multiple CSP-Report-Only headers separately
       if (headers['content-security-policy-report-only']) {
-        headers['content-security-policy-report-only'] = HtmlRewriter.patchCsp(
-          String(headers['content-security-policy-report-only']),
-          nonceToUse
-        );
+        const rawReport = headers['content-security-policy-report-only'];
+        if (Array.isArray(rawReport)) {
+          headers['content-security-policy-report-only'] = rawReport.map((policy) =>
+            HtmlRewriter.patchCsp(String(policy), nonceToUse, targetWsOrigin)
+          );
+        } else {
+          headers['content-security-policy-report-only'] = HtmlRewriter.patchCsp(
+            String(rawReport),
+            nonceToUse,
+            targetWsOrigin
+          );
+        }
       }
 
       return {

@@ -216,7 +216,7 @@ export class LanProxyServer {
 
         upstreamRes.on('end', async () => {
           const rawBuffer = Buffer.concat(chunks);
-          const result = await this.htmlRewriter.process(rawBuffer, upstreamRes.headers);
+          const result = await this.htmlRewriter.process(rawBuffer, upstreamRes.headers, req.headers.host);
 
           res.writeHead(upstreamRes.statusCode || 200, result.headers as any);
           res.end(result.body);
