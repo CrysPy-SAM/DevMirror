@@ -56,7 +56,21 @@ export class LanProxyServer {
   }
 
   /**
-   * Updates upstream target dev server dynamically.
+   * Destroys all active client and upstream sockets (e.g. on target switch or engine shutdown).
+   */
+  public closeActiveSockets(): void {
+    for (const socket of this.activeSockets) {
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+    }
+    this.activeSockets.clear();
+  }
+
+  /**
+   * Updates upstream target dev server dynamically and drains previous active sockets.
    */
   public updateTarget(newTarget: TargetDevServer): void {
     this.target = { ...newTarget };
@@ -66,6 +80,7 @@ export class LanProxyServer {
       targetPort: this.target.port,
       framework: this.target.framework
     });
+    this.closeActiveSockets();
   }
 
   /**

@@ -76,8 +76,14 @@ export class PortManager {
     preferredProxyPort?: number;
     preferredControlPort?: number;
   }): Promise<{ proxyPort: number; controlPort: number }> {
-    const preferredProxy = options?.preferredProxyPort ?? DEFAULT_PROXY_PORT;
-    const preferredControl = options?.preferredControlPort ?? DEFAULT_CONTROL_PORT;
+    const preferredProxy =
+      options?.preferredProxyPort && options.preferredProxyPort > 0
+        ? options.preferredProxyPort
+        : DEFAULT_PROXY_PORT;
+    const preferredControl =
+      options?.preferredControlPort && options.preferredControlPort > 0
+        ? options.preferredControlPort
+        : DEFAULT_CONTROL_PORT;
 
     const proxyPort = await this.findAvailablePort({
       preferredPort: preferredProxy,

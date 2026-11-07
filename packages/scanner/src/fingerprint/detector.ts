@@ -49,42 +49,37 @@ export class FrameworkDetector {
     if (
       poweredBy.includes('nuxt') ||
       body.includes('__NUXT__') ||
+      body.includes('__NUXT_DATA__') ||
       body.includes('/_nuxt/') ||
-      body.includes('<div id="__nuxt">')
+      body.includes('<div id="__nuxt">') ||
+      body.includes('id="__nuxt"')
     ) {
       const confidence: DetectionConfidence =
-        poweredBy.includes('nuxt') || body.includes('__NUXT__') ? 'high' : 'medium';
+        poweredBy.includes('nuxt') || body.includes('__NUXT__') || body.includes('__NUXT_DATA__')
+          ? 'high'
+          : 'medium';
       return { framework: 'nuxt', frameworkName: 'Nuxt', confidence, title };
     }
 
-    // 3. Vite (React, Vue, Svelte, Vanilla)
-    if (
-      serverHeader.includes('vite') ||
-      body.includes('/@vite/client') ||
-      body.includes('window.__vite_plugin_react_preamble_installed__') ||
-      body.includes('/@fs/') ||
-      body.includes('type="module" src="/src/main.') ||
-      body.includes('type="module" src="/src/index.')
-    ) {
-      const confidence: DetectionConfidence =
-        body.includes('/@vite/client') || serverHeader.includes('vite') ? 'high' : 'medium';
-      return { framework: 'vite', frameworkName: 'Vite', confidence, title };
-    }
-
-    // 4. Astro
+    // 3. Astro (must precede generic Vite because Astro uses Vite under the hood)
     if (
       headers['x-astro'] ||
       body.includes('<astro-island') ||
       body.includes('astro-island[') ||
       body.includes('Astro.generator') ||
-      body.includes('class="astro-')
+      body.includes('data-astro-cid-') ||
+      body.includes('data-astro-source-file') ||
+      body.includes('class="astro-') ||
+      body.includes('<!--astro:')
     ) {
       const confidence: DetectionConfidence =
-        body.includes('<astro-island') || body.includes('Astro.generator') ? 'high' : 'medium';
+        body.includes('<astro-island') || body.includes('Astro.generator') || headers['x-astro']
+          ? 'high'
+          : 'medium';
       return { framework: 'astro', frameworkName: 'Astro', confidence, title };
     }
 
-    // 5. Angular
+    // 4. Angular
     if (
       body.includes('ng-version="') ||
       body.includes('<app-root') ||
@@ -95,13 +90,30 @@ export class FrameworkDetector {
       return { framework: 'angular', frameworkName: 'Angular', confidence, title };
     }
 
-    // 6. Create React App (CRA) / Webpack React
+    // 5. Create React App (CRA) / Webpack React
     if (
       body.includes('webpackHotDevClient') ||
       (body.includes('<div id="root">') && body.includes('/static/js/bundle.js')) ||
-      (body.includes('react-scripts') && body.includes('<div id="root">'))
+      (body.includes('react-scripts') && body.includes('<div id="root">')) ||
+      (body.includes('<div id="root">') && body.includes('/static/js/main.chunk.js'))
     ) {
       return { framework: 'cra', frameworkName: 'Create React App', confidence: 'medium', title };
+    }
+
+    // 6. Vite (React, Vue, Svelte, Vanilla)
+    if (
+      serverHeader.includes('vite') ||
+      body.includes('/@vite/client') ||
+      body.includes('window.__vite_plugin_react_preamble_installed__') ||
+      body.includes('/@react-refresh') ||
+      body.includes('/@fs/') ||
+      body.includes('/@vite-hmr') ||
+      body.includes('type="module" src="/src/main.') ||
+      body.includes('type="module" src="/src/index.')
+    ) {
+      const confidence: DetectionConfidence =
+        body.includes('/@vite/client') || serverHeader.includes('vite') ? 'high' : 'medium';
+      return { framework: 'vite', frameworkName: 'Vite', confidence, title };
     }
 
     // 7. Generic HTML / Static Dev Server

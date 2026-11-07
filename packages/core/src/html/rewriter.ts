@@ -38,6 +38,18 @@ export class HtmlRewriter {
   }
 
   /**
+   * Extracts an existing cryptographic nonce from <meta http-equiv="Content-Security-Policy"> if present.
+   */
+  public static extractMetaNonce(html: string): string | null {
+    const match = html.match(/<meta[^>]*http-equiv=["']Content-Security-Policy["'][^>]*content=(?:"([^"]*)"|'([^']*)')/i);
+    if (match) {
+      const content = match[1] ?? match[2];
+      return HtmlRewriter.extractExistingNonce(content);
+    }
+    return null;
+  }
+
+  /**
    * Extracts an existing cryptographic nonce from CSP headers if one is already present.
    * Handles both single policy strings and arrays of policies.
    */
@@ -110,10 +122,13 @@ export class HtmlRewriter {
    */
   public static patchMetaCsp(html: string, nonce: string, targetWsOrigin: string): string {
     return html.replace(
-      /(<meta\s+[^>]*http-equiv=["']Content-Security-Policy["'][^>]*content=["'])([^"']+)(["'][^>]*>)/gi,
-      (_match, prefix, content, suffix) => {
+      /(<meta\s+[^>]*http-equiv=["']Content-Security-Policy["'][^>]*content=)(?:"([^"]*)"|'([^']*)')([^>]*>)/gi,
+      (_match, prefix, contentDouble, contentSingle, suffix) => {
+        const isDouble = contentDouble !== undefined;
+        const content = isDouble ? contentDouble : contentSingle;
+        const quote = isDouble ? '"' : "'";
         const patchedContent = HtmlRewriter.patchCsp(content, nonce, targetWsOrigin);
-        return `${prefix}${patchedContent}${suffix}`;
+        return `${prefix}${quote}${patchedContent}${quote}${suffix}`;
       }
     );
   }
@@ -233,9 +248,9 @@ export class HtmlRewriter {
       const targetWsOrigin = `ws://${effectiveHost}`;
 
       // Determine nonce strategy:
-      // Reuse existing nonce if present in any CSP policy; otherwise generate a fresh CSPRNG nonce
+      // Reuse existing nonce if present in any CSP policy or <meta> tag; otherwise generate a fresh CSPRNG nonce
       const existingCsp = headers['content-security-policy'] as string | string[] | undefined;
-      const detectedNonce = HtmlRewriter.extractExistingNonce(existingCsp);
+      const detectedNonce = HtmlRewriter.extractExistingNonce(existingCsp) || HtmlRewriter.extractMetaNonce(htmlText);
       const nonceToUse = detectedNonce || crypto.randomBytes(16).toString('base64');
 
       const transformedHtml = this.injectScript(htmlText, nonceToUse, targetWsOrigin);

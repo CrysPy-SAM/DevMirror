@@ -32,6 +32,8 @@ export interface ControlApiOptions {
   requireAuth?: boolean;
   allowedExtensionIds?: string[];
   onDiscover?: () => Promise<any[]>;
+  onTargetChange?: (target: TargetDevServer) => Promise<void> | void;
+  onSessionRevoke?: () => Promise<void> | void;
 }
 
 export class ControlApi {
@@ -44,8 +46,11 @@ export class ControlApi {
   private readonly requireAuth: boolean;
   private readonly allowedExtensionIds: string[];
   private readonly onDiscover?: () => Promise<any[]>;
+  private readonly onTargetChange?: (target: TargetDevServer) => Promise<void> | void;
+  private readonly onSessionRevoke?: () => Promise<void> | void;
   private readonly startTime: number;
   private isRunning: boolean = false;
+  private actualPort: number = 0;
 
   constructor(options: ControlApiOptions) {
     this.port = options.port;
@@ -55,6 +60,8 @@ export class ControlApi {
     this.controlToken = options.controlToken;
     this.requireAuth = options.requireAuth ?? false;
     this.onDiscover = options.onDiscover;
+    this.onTargetChange = options.onTargetChange;
+    this.onSessionRevoke = options.onSessionRevoke;
     this.startTime = Date.now();
 
     // Build trusted extension ID allowlist (development ID + any configured production/custom IDs)
@@ -349,10 +356,10 @@ export class ControlApi {
         title: body.target.title
       };
 
-      let session: SanitizedSessionInfo;
-      if (this.sessionManager.hasActiveSession()) {
+      if (this.onTargetChange) {
+        await this.onTargetChange(target);
+      } else if (this.sessionManager.hasActiveSession()) {
         this.sessionManager.updateTarget(target);
-        session = this.sessionManager.getSanitizedSession()!;
       } else {
         this.sessionManager.createSession({
           target,
@@ -360,8 +367,9 @@ export class ControlApi {
           proxyPort: this.proxyPort,
           controlPort: this.port
         });
-        session = this.sessionManager.getSanitizedSession()!;
       }
+
+      const session = this.sessionManager.getSanitizedSession()!;
 
       return {
         success: true,
@@ -371,6 +379,9 @@ export class ControlApi {
 
     // Revoke session
     this.app.delete('/api/v1/session', async () => {
+      if (this.onSessionRevoke) {
+        await this.onSessionRevoke();
+      }
       this.sessionManager.revokeSession();
       return {
         success: true,
@@ -397,6 +408,12 @@ export class ControlApi {
       port: this.port,
       host: '127.0.0.1'
     });
+    const addr = this.app.server.address();
+    if (addr && typeof addr === 'object') {
+      this.actualPort = addr.port;
+    } else {
+      this.actualPort = this.port;
+    }
     this.isRunning = true;
   }
 
@@ -407,6 +424,10 @@ export class ControlApi {
     if (!this.isRunning) return;
     await this.app.close();
     this.isRunning = false;
+  }
+
+  public get assignedPort(): number {
+    return this.actualPort || this.port;
   }
 
   public get fastify(): FastifyInstance {

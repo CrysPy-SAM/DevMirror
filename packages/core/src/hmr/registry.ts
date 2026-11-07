@@ -8,6 +8,9 @@ import type { IHmrAdapter } from './types.js';
 import { ViteHmrAdapter } from './vite.js';
 import { NextjsHmrAdapter } from './nextjs.js';
 import { AngularHmrAdapter } from './angular.js';
+import { AstroHmrAdapter } from './astro.js';
+import { NuxtHmrAdapter } from './nuxt.js';
+import { CraHmrAdapter } from './cra.js';
 
 export class HmrRegistry {
   private readonly adapters: Map<SupportedFramework, IHmrAdapter> = new Map();
@@ -16,6 +19,9 @@ export class HmrRegistry {
     this.register(new ViteHmrAdapter());
     this.register(new NextjsHmrAdapter());
     this.register(new AngularHmrAdapter());
+    this.register(new AstroHmrAdapter());
+    this.register(new NuxtHmrAdapter());
+    this.register(new CraHmrAdapter());
   }
 
   public register(adapter: IHmrAdapter): void {

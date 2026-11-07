@@ -65,6 +65,15 @@ describe('FrameworkDetector', () => {
       expect(result.framework).toBe('nuxt');
       expect(result.confidence).toBe('high');
     });
+
+    it('should detect Nuxt 3 with high confidence via __NUXT_DATA__ marker', () => {
+      const result = FrameworkDetector.detect(
+        {},
+        '<script id="__NUXT_DATA__" type="application/json">[{"data":1}]</script>'
+      );
+      expect(result.framework).toBe('nuxt');
+      expect(result.confidence).toBe('high');
+    });
   });
 
   describe('Vite detection', () => {
@@ -115,6 +124,16 @@ describe('FrameworkDetector', () => {
       );
       expect(result.framework).toBe('astro');
       expect(result.confidence).toBe('medium');
+    });
+
+    it('should prioritize Astro over Vite when Astro markers are present alongside /@vite/client', () => {
+      const result = FrameworkDetector.detect(
+        { server: 'vite/5.1.0' },
+        '<html><head><script type="module" src="/@vite/client"></script></head><body><astro-island uid="1"></astro-island></body></html>'
+      );
+      expect(result.framework).toBe('astro');
+      expect(result.frameworkName).toBe('Astro');
+      expect(result.confidence).toBe('high');
     });
   });
 
