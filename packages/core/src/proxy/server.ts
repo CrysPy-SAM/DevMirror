@@ -1,44 +1,84 @@
 /**
  * @devmirror/core - LAN Reverse Proxy Server
- * Reverse HTTP proxy bound to the LAN interface, enforcing token auth and forwarding to local dev server.
+ * Reverse HTTP and WebSocket proxy bound to the LAN interface, enforcing token auth,
+ * HMR protocol forwarding, and optional HTML companion injection.
  */
 
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import https from 'node:https';
+import type { Duplex } from 'node:stream';
+import type net from 'node:net';
 import {
   SESSION_COOKIE_NAME,
   SESSION_QUERY_PARAM,
   type TargetDevServer
 } from '@devmirror/shared';
 import type { SessionManager } from '../session/manager.js';
+import { HmrRegistry } from '../hmr/registry.js';
+import { HtmlRewriter } from '../html/rewriter.js';
 
 export interface LanProxyOptions {
   port: number;
   host?: string;
   sessionManager: SessionManager;
   target: TargetDevServer;
+  enableOverlay?: boolean; // Default must be false!
 }
 
 export class LanProxyServer {
   private readonly port: number;
   private readonly host: string;
   private readonly sessionManager: SessionManager;
+  private readonly hmrRegistry: HmrRegistry;
   private target: TargetDevServer;
+  private enableOverlay: boolean;
+  private htmlRewriter: HtmlRewriter;
+
   private server: http.Server | null = null;
   private isRunning: boolean = false;
+  private actualPort: number = 0;
+  private readonly activeSockets: Set<Duplex | net.Socket> = new Set();
 
   constructor(options: LanProxyOptions) {
     this.port = options.port;
     this.host = options.host ?? '0.0.0.0';
     this.sessionManager = options.sessionManager;
     this.target = { ...options.target };
+    this.enableOverlay = options.enableOverlay ?? false; // Default: false!
+
+    this.hmrRegistry = new HmrRegistry();
+    this.htmlRewriter = new HtmlRewriter({
+      enableOverlay: this.enableOverlay,
+      proxyPort: this.port,
+      targetPort: this.target.port,
+      framework: this.target.framework
+    });
   }
 
   /**
-   * Updates the upstream target dev server dynamically.
+   * Updates upstream target dev server dynamically.
    */
   public updateTarget(newTarget: TargetDevServer): void {
     this.target = { ...newTarget };
+    this.htmlRewriter = new HtmlRewriter({
+      enableOverlay: this.enableOverlay,
+      proxyPort: this.assignedPort,
+      targetPort: this.target.port,
+      framework: this.target.framework
+    });
+  }
+
+  /**
+   * Toggles HTML companion overlay injection dynamically.
+   */
+  public setEnableOverlay(enabled: boolean): void {
+    this.enableOverlay = enabled;
+    this.htmlRewriter = new HtmlRewriter({
+      enableOverlay: this.enableOverlay,
+      proxyPort: this.assignedPort,
+      targetPort: this.target.port,
+      framework: this.target.framework
+    });
   }
 
   /**
@@ -61,7 +101,7 @@ export class LanProxyServer {
   }
 
   /**
-   * Core request dispatcher.
+   * Core HTTP request dispatcher.
    */
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const clientIp = req.socket.remoteAddress || 'unknown';
@@ -72,10 +112,8 @@ export class LanProxyServer {
     const queryToken = reqUrl.searchParams.get(SESSION_QUERY_PARAM);
     if (queryToken) {
       if (this.sessionManager.validateToken(queryToken)) {
-        // Register device
         this.sessionManager.registerDevice({ ip: clientIp, userAgent });
 
-        // Strip the token from query params and 302 redirect with HttpOnly cookie
         reqUrl.searchParams.delete(SESSION_QUERY_PARAM);
         const redirectPath = reqUrl.pathname + reqUrl.search;
 
@@ -107,23 +145,22 @@ export class LanProxyServer {
     this.sessionManager.registerDevice({ ip: clientIp, userAgent });
 
     // 3. Forward request to target dev server
-    this.forwardRequest(req, res, reqUrl);
+    this.forwardHttpRequest(req, res, reqUrl);
   }
 
   /**
-   * Forwards HTTP request to upstream target dev server with header normalization.
+   * Forwards HTTP request to upstream target dev server with optional HTML rewriting.
    */
-  private forwardRequest(req: IncomingMessage, res: ServerResponse, parsedUrl: URL): void {
+  private forwardHttpRequest(req: IncomingMessage, res: ServerResponse, parsedUrl: URL): void {
     const isTargetHttps = this.target.isHttps;
     const httpModule = isTargetHttps ? https : http;
 
-    // Prepare normalized headers
     const forwardedHeaders: http.OutgoingHttpHeaders = { ...req.headers };
 
-    // Rewrite Host header to target dev server (satisfies Vite/Webpack host check)
+    // Rewrite Host
     forwardedHeaders.host = `${this.target.host}:${this.target.port}`;
 
-    // Normalize Origin and Referer if present
+    // Normalize Origin and Referer
     if (forwardedHeaders.origin) {
       forwardedHeaders.origin = `http${isTargetHttps ? 's' : ''}://${this.target.host}:${this.target.port}`;
     }
@@ -135,11 +172,10 @@ export class LanProxyServer {
         refUrl.host = `${this.target.host}:${this.target.port}`;
         forwardedHeaders.referer = refUrl.toString();
       } catch {
-        // ignore malformed referer
+        // ignore
       }
     }
 
-    // Preserve and inject X-Forwarded headers
     forwardedHeaders['x-forwarded-for'] = req.socket.remoteAddress || '127.0.0.1';
     forwardedHeaders['x-forwarded-host'] = req.headers.host || `${this.host}:${this.port}`;
     forwardedHeaders['x-forwarded-proto'] = 'http';
@@ -153,10 +189,37 @@ export class LanProxyServer {
       timeout: 30000
     };
 
-    const upstreamReq = httpModule.request(requestOptions, (upstreamRes) => {
-      // Forward status and headers
-      res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers);
-      upstreamRes.pipe(res);
+    const upstreamReq = httpModule.request(requestOptions, async (upstreamRes) => {
+      const contentType = String(upstreamRes.headers['content-type'] || '').toLowerCase();
+      const isHtml = contentType.includes('text/html');
+
+      // If overlay is enabled and response is HTML, buffer and rewrite
+      if (this.enableOverlay && isHtml) {
+        const chunks: Buffer[] = [];
+
+        upstreamRes.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+
+        upstreamRes.on('end', async () => {
+          const rawBuffer = Buffer.concat(chunks);
+          const result = await this.htmlRewriter.process(rawBuffer, upstreamRes.headers);
+
+          res.writeHead(upstreamRes.statusCode || 200, result.headers as any);
+          res.end(result.body);
+        });
+
+        upstreamRes.on('error', (err) => {
+          if (!res.headersSent) {
+            res.writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(this.renderErrorPage('502 Bad Gateway', `Error streaming from dev server: ${err.message}`));
+          }
+        });
+      } else {
+        // Pure pass-through streaming (fast, zero memory overhead)
+        res.writeHead(upstreamRes.statusCode || 200, upstreamRes.headers);
+        upstreamRes.pipe(res);
+      }
     });
 
     upstreamReq.on('error', (err) => {
@@ -179,8 +242,153 @@ export class LanProxyServer {
       }
     });
 
-    // Pipe client request body to upstream
     req.pipe(upstreamReq);
+  }
+
+  /**
+   * Handles HTTP Upgrade requests for WebSocket & HMR connections.
+   */
+  private handleUpgrade(req: IncomingMessage, clientSocket: Duplex, head: Buffer): void {
+    const clientIp = req.socket.remoteAddress || 'unknown';
+    const userAgent = req.headers['user-agent'] || 'unknown';
+    const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+    // 1. Origin validation: reject arbitrary malicious origins
+    const origin = req.headers.origin;
+    if (origin && origin !== 'null') {
+      try {
+        const originUrl = new URL(origin);
+        // Allow loopback, LAN IP, or Chrome Extension
+        const isAllowedOrigin =
+          originUrl.hostname === '127.0.0.1' ||
+          originUrl.hostname === 'localhost' ||
+          originUrl.hostname === this.host ||
+          origin.startsWith('chrome-extension://') ||
+          originUrl.hostname.startsWith('192.168.') ||
+          originUrl.hostname.startsWith('10.') ||
+          (originUrl.hostname.startsWith('172.') && parseInt(originUrl.hostname.split('.')[1], 10) >= 16);
+
+        if (!isAllowedOrigin) {
+          this.rejectWebSocket(clientSocket, 403, 'Forbidden: Invalid WebSocket Origin');
+          return;
+        }
+      } catch {
+        this.rejectWebSocket(clientSocket, 403, 'Forbidden: Malformed WebSocket Origin');
+        return;
+      }
+    }
+
+    // 2. Validate Session Authentication
+    const queryToken = reqUrl.searchParams.get(SESSION_QUERY_PARAM);
+    const cookies = this.parseCookies(req.headers.cookie);
+    const sessionCookie = cookies[SESSION_COOKIE_NAME];
+
+    const isValidToken = queryToken && this.sessionManager.validateToken(queryToken);
+    const isValidCookie = sessionCookie && this.sessionManager.validateCookie(sessionCookie);
+
+    if (!isValidToken && !isValidCookie) {
+      this.rejectWebSocket(clientSocket, 401, 'Unauthorized: Valid DevMirror session required');
+      return;
+    }
+
+    // Update client ping
+    this.sessionManager.registerDevice({ ip: clientIp, userAgent });
+
+    // Track active client socket
+    this.activeSockets.add(clientSocket);
+    clientSocket.once('close', () => this.activeSockets.delete(clientSocket));
+    clientSocket.once('error', () => {
+      this.activeSockets.delete(clientSocket);
+      clientSocket.destroy();
+    });
+
+    // 3. Find matching HMR adapter and normalize headers
+    const adapter = this.hmrRegistry.findAdapter(req.url || '/', this.target);
+    const forwardedHeaders = adapter.normalizeHeaders(req.headers, this.target);
+
+    // Forward required WebSocket upgrade headers
+    if (req.headers['sec-websocket-key']) {
+      forwardedHeaders['sec-websocket-key'] = req.headers['sec-websocket-key'] as string;
+    }
+    if (req.headers['sec-websocket-version']) {
+      forwardedHeaders['sec-websocket-version'] = req.headers['sec-websocket-version'] as string;
+    }
+    if (req.headers['sec-websocket-extensions']) {
+      forwardedHeaders['sec-websocket-extensions'] = req.headers['sec-websocket-extensions'] as string;
+    }
+    if (req.headers['sec-websocket-protocol']) {
+      forwardedHeaders['sec-websocket-protocol'] = req.headers['sec-websocket-protocol'] as string;
+    }
+
+    forwardedHeaders['connection'] = 'Upgrade';
+    forwardedHeaders['upgrade'] = 'websocket';
+
+    const isTargetHttps = this.target.isHttps;
+    const httpModule = isTargetHttps ? https : http;
+
+    const upstreamReq = httpModule.request({
+      hostname: this.target.host,
+      port: this.target.port,
+      path: req.url,
+      method: 'GET',
+      headers: forwardedHeaders,
+      timeout: 30000
+    });
+
+    upstreamReq.on('upgrade', (upstreamRes, upstreamSocket, upstreamHead) => {
+      this.activeSockets.add(upstreamSocket);
+
+      upstreamSocket.once('close', () => {
+        this.activeSockets.delete(upstreamSocket);
+        clientSocket.destroy();
+      });
+
+      upstreamSocket.once('error', () => {
+        this.activeSockets.delete(upstreamSocket);
+        upstreamSocket.destroy();
+        clientSocket.destroy();
+      });
+
+      // Forward 101 Switching Protocols handshake to client
+      let rawHandshake = `HTTP/1.1 101 Switching Protocols\r\n`;
+      for (const [key, val] of Object.entries(upstreamRes.headers)) {
+        if (Array.isArray(val)) {
+          for (const v of val) rawHandshake += `${key}: ${v}\r\n`;
+        } else if (val !== undefined) {
+          rawHandshake += `${key}: ${val}\r\n`;
+        }
+      }
+      rawHandshake += '\r\n';
+
+      clientSocket.write(rawHandshake);
+
+      if (upstreamHead && upstreamHead.length > 0) {
+        clientSocket.write(upstreamHead);
+      }
+      if (head && head.length > 0) {
+        upstreamSocket.write(head);
+      }
+
+      // Pipe bidirectionally
+      clientSocket.pipe(upstreamSocket);
+      upstreamSocket.pipe(clientSocket);
+    });
+
+    upstreamReq.on('error', (err) => {
+      this.rejectWebSocket(clientSocket, 502, `Bad Gateway: Target dev server unreachable (${err.message})`);
+    });
+
+    upstreamReq.end();
+  }
+
+  /**
+   * Rejects an unauthenticated or invalid WebSocket upgrade request with HTTP error code and closes socket.
+   */
+  private rejectWebSocket(socket: Duplex, statusCode: number, reason: string): void {
+    const statusText = statusCode === 401 ? 'Unauthorized' : statusCode === 403 ? 'Forbidden' : 'Bad Gateway';
+    const response = `HTTP/1.1 ${statusCode} ${statusText}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n${reason}`;
+    socket.write(response);
+    socket.destroy();
   }
 
   private renderUnauthorizedPage(message: string): string {
@@ -230,7 +438,7 @@ export class LanProxyServer {
   }
 
   /**
-   * Starts listening on the configured port and host.
+   * Starts listening on configured port and host.
    */
   public async start(): Promise<void> {
     if (this.isRunning) return;
@@ -238,11 +446,26 @@ export class LanProxyServer {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => this.handleRequest(req, res));
 
+      // Handle WebSocket upgrades
+      this.server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head));
+
       this.server.once('error', (err) => {
         reject(err);
       });
 
       this.server.listen(this.port, this.host, () => {
+        const addr = this.server!.address();
+        if (addr && typeof addr === 'object') {
+          this.actualPort = addr.port;
+        } else {
+          this.actualPort = this.port;
+        }
+        this.htmlRewriter = new HtmlRewriter({
+          enableOverlay: this.enableOverlay,
+          proxyPort: this.actualPort,
+          targetPort: this.target.port,
+          framework: this.target.framework
+        });
         this.isRunning = true;
         resolve();
       });
@@ -250,10 +473,20 @@ export class LanProxyServer {
   }
 
   /**
-   * Stops the server and frees the port.
+   * Stops server, destroys all active sockets, and frees the port.
    */
   public async stop(): Promise<void> {
     if (!this.isRunning || !this.server) return;
+
+    // Destroy all active sockets immediately
+    for (const socket of this.activeSockets) {
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+    }
+    this.activeSockets.clear();
 
     return new Promise((resolve) => {
       this.server!.close(() => {
@@ -268,7 +501,15 @@ export class LanProxyServer {
     return this.isRunning;
   }
 
-  public get httpServer(): http.Server | null {
-    return this.server;
+  public get assignedPort(): number {
+    return this.actualPort || this.port;
+  }
+
+  public get activeSocketCount(): number {
+    return this.activeSockets.size;
+  }
+
+  public get isOverlayEnabled(): boolean {
+    return this.enableOverlay;
   }
 }

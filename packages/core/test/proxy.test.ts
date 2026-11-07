@@ -35,9 +35,8 @@ describe('LanProxyServer', () => {
     });
 
     // 2. Start LanProxyServer on ephemeral port
-    proxyPort = targetPort + 100;
     proxyServer = new LanProxyServer({
-      port: proxyPort,
+      port: 0,
       host: '127.0.0.1',
       sessionManager,
       target: {
@@ -49,6 +48,7 @@ describe('LanProxyServer', () => {
     });
 
     await proxyServer.start();
+    proxyPort = proxyServer.assignedPort;
   });
 
   afterEach(async () => {

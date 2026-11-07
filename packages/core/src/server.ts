@@ -21,6 +21,7 @@ export interface DevMirrorEngineOptions {
   preferredControlPort?: number;
   target?: TargetDevServer;
   sessionTtlMs?: number;
+  enableOverlay?: boolean; // Default must be false!
   enableGracefulShutdown?: boolean;
 }
 
@@ -99,7 +100,8 @@ export class DevMirrorEngine {
         port: proxyPort,
         host: '0.0.0.0',
         sessionManager: this.sessionManager,
-        target: this.options.target
+        target: this.options.target,
+        enableOverlay: this.options.enableOverlay ?? false
       });
       await this.proxyServer.start();
     }
@@ -143,7 +145,8 @@ export class DevMirrorEngine {
         port: this.activeProxyPort,
         host: '0.0.0.0',
         sessionManager: this.sessionManager,
-        target
+        target,
+        enableOverlay: this.options.enableOverlay ?? false
       });
       await this.proxyServer.start();
     }
