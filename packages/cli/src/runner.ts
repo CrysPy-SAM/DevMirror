@@ -6,7 +6,8 @@
 import readline from 'node:readline';
 import chalk from 'chalk';
 import { DevMirrorEngine, type DevMirrorEngineOptions } from '@devmirror/core';
-import type { TargetDevServer } from '@devmirror/shared';
+import { DevServerScanner } from '@devmirror/scanner';
+import { DEVMIRROR_DEV_EXTENSION_ID, type TargetDevServer } from '@devmirror/shared';
 import { buildMobilePreviewUrl, generateTerminalQr } from './qr.js';
 import { TerminalDisplay } from './banner.js';
 
@@ -45,7 +46,12 @@ export class DevMirrorCliRunner {
       preferredControlPort: options.preferredControlPort,
       target: options.target,
       enableOverlay: options.enableOverlay ?? false,
-      enableGracefulShutdown: false // Managed by runner directly
+      enableGracefulShutdown: false, // Managed by runner directly
+      allowedExtensionIds: [DEVMIRROR_DEV_EXTENSION_ID],
+      onDiscover: async () => {
+        const scanner = new DevServerScanner();
+        return scanner.scan();
+      }
     };
 
     this.engine = new DevMirrorEngine(engineOptions);
