@@ -39,6 +39,7 @@ export class DevServerScanner {
     const timeoutMs = options.timeoutMs ?? 350;
     const concurrency = options.concurrency ?? 10;
     const includeProcessInfo = options.includeProcessInfo ?? true;
+    const allowInsecureCertificates = options.allowInsecureCertificates ?? false;
 
     // 1. Resolve ports to scan
     let targetPorts: number[];
@@ -54,14 +55,20 @@ export class DevServerScanner {
     const validPorts = Array.from(new Set(targetPorts)).filter((p) => p >= 1 && p <= 65535 && Number.isInteger(p));
 
     // 2. Probe ports
-    const probeResults = await this.portProber.scanPorts(host, validPorts, timeoutMs, concurrency);
+    const probeResults = await this.portProber.scanPorts(
+      host,
+      validPorts,
+      timeoutMs,
+      concurrency,
+      allowInsecureCertificates
+    );
 
     // 3. Process open HTTP ports and build server descriptors
     const discoveredServers: DiscoveredDevServer[] = [];
 
     for (const res of probeResults) {
-      // Must be open
-      if (!res.isOpen) continue;
+      // Must be open and accepting valid HTTP(S) connections
+      if (!res.isOpen || !res.isHttp) continue;
 
       const detection = FrameworkDetector.detect(res.headers, res.bodySnippet);
       const isHttps = !!res.isHttps;
@@ -119,6 +126,7 @@ export class DevServerScanner {
   ): Promise<DiscoveredDevServer | null> {
     const timeoutMs = options.timeoutMs ?? 1500;
     const includeProcessInfo = options.includeProcessInfo ?? true;
+    const allowInsecureCertificates = options.allowInsecureCertificates ?? false;
 
     // Validate port boundaries
     if (port < 1 || port > 65535 || !Number.isInteger(port)) {
@@ -130,8 +138,8 @@ export class DevServerScanner {
       throw new Error(`Forbidden host: ${host}. Scanner only allows loopback and private LAN addresses.`);
     }
 
-    const probe = await this.portProber.probePort(host, port, timeoutMs);
-    if (!probe.isOpen) {
+    const probe = await this.portProber.probePort(host, port, timeoutMs, allowInsecureCertificates);
+    if (!probe.isOpen || !probe.isHttp) {
       return null;
     }
 

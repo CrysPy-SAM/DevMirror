@@ -169,4 +169,47 @@ describe('DevServerScanner', () => {
     expect(discovered.length).toBe(1);
     expect(discovered[0].port).toBe(vitePort);
   });
+
+  it('should ignore self-signed HTTPS servers by default and discover them when allowInsecureCertificates is true', async () => {
+    const { TEST_TLS_KEY, TEST_TLS_CERT } = await import('./fixtures/tls.js');
+    const https = await import('node:https');
+
+    const httpsServer = https.createServer(
+      { key: TEST_TLS_KEY, cert: TEST_TLS_CERT },
+      (_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html', 'X-Powered-By': 'Next.js' });
+        res.end('<html><head><title>Secure Next App</title></head><body><div id="__next"></div></body></html>');
+      }
+    );
+
+    await new Promise<void>((resolve) => {
+      httpsServer.listen(0, '127.0.0.1', () => resolve());
+    });
+    const httpsPort = (httpsServer.address() as any).port;
+
+    const scanner = new DevServerScanner();
+
+    // Default: strict cert validation, self-signed HTTPS is ignored
+    const defaultScan = await scanner.scan({
+      ports: [httpsPort],
+      includeProcessInfo: false,
+      timeoutMs: 300,
+      allowInsecureCertificates: false
+    });
+    expect(defaultScan.length).toBe(0);
+
+    // Opted-in: discovers self-signed HTTPS server
+    const optInScan = await scanner.scan({
+      ports: [httpsPort],
+      includeProcessInfo: false,
+      timeoutMs: 300,
+      allowInsecureCertificates: true
+    });
+    expect(optInScan.length).toBe(1);
+    expect(optInScan[0].port).toBe(httpsPort);
+    expect(optInScan[0].isHttps).toBe(true);
+    expect(optInScan[0].framework).toBe('nextjs');
+
+    await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
+  });
 });

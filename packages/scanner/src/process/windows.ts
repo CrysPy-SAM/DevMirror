@@ -1,6 +1,7 @@
 /**
  * @devmirror/scanner - Windows Process Inspector
  * Uses read-only Windows native utilities (netstat and tasklist) to resolve PIDs and process names.
+ * Safe argument handling with zero process mutation or termination capabilities.
  */
 
 import { execFile } from 'node:child_process';
@@ -17,25 +18,66 @@ export class WindowsProcessInspector implements IProcessInspector {
   }
 
   /**
+   * Parses netstat -ano -p tcp stdout to find the listening PID for a port.
+   * Accurately supports both IPv4 and IPv6 lines.
+   */
+  public static parseNetstatPid(stdout: string, port: number): number | null {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return null;
+    }
+
+    // Match TCP listening line for IPv4 or IPv6 local address on given port
+    // IPv4 examples:
+    //   TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       4120
+    //   TCP    127.0.0.1:3000         0.0.0.0:0              LISTENING       4120
+    // IPv6 examples:
+    //   TCP    [::]:3000              [::]:0                 LISTENING       4120
+    //   TCP    [::1]:3000             [::]:0                 LISTENING       4120
+    //   TCP    [fe80::1%12]:3000      [::]:0                 LISTENING       4120
+    const regex = new RegExp(`^\\s*TCP\\s+\\S+:${port}\\s+\\S+\\s+LISTENING\\s+(\\d+)`, 'im');
+    const match = stdout.match(regex);
+
+    if (match && match[1]) {
+      const pid = parseInt(match[1], 10);
+      return !isNaN(pid) && pid > 0 ? pid : null;
+    }
+
+    return null;
+  }
+
+  /**
+   * Parses tasklist /fo csv output to extract the executable name.
+   */
+  public static parseTasklistName(stdout: string): string | null {
+    // Example CSV output: "node.exe","14208","Console","1","45,200 K"
+    const match = stdout.match(/"([^"]+)"/);
+    if (
+      match &&
+      match[1] &&
+      !match[1].toLowerCase().includes('no tasks') &&
+      !match[1].toLowerCase().includes('info:')
+    ) {
+      return match[1];
+    }
+
+    return null;
+  }
+
+  /**
    * Resolves the PID listening on a given port using netstat -ano -p tcp.
    */
   public async findPidByPort(port: number): Promise<number | null> {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      return null;
+    }
+
     try {
       const { stdout } = await execFileAsync('netstat.exe', ['-ano', '-p', 'tcp'], {
         timeout: this.timeoutMs,
         windowsHide: true
       });
 
-      // Find lines matching: TCP  (IP):(PORT)  (ANY)  LISTENING  (PID)
-      const regex = new RegExp(`:${port}\\s+[^\\s]+\\s+LISTENING\\s+(\\d+)`, 'i');
-      const match = stdout.match(regex);
-
-      if (match && match[1]) {
-        const pid = parseInt(match[1], 10);
-        return isNaN(pid) ? null : pid;
-      }
-
-      return null;
+      return WindowsProcessInspector.parseNetstatPid(stdout, port);
     } catch {
       return null;
     }
@@ -43,8 +85,13 @@ export class WindowsProcessInspector implements IProcessInspector {
 
   /**
    * Resolves the process executable name for a given PID using tasklist.
+   * Only positive integers are accepted to guarantee argument safety.
    */
   public async findProcessNameByPid(pid: number): Promise<string | null> {
+    if (!Number.isInteger(pid) || pid <= 0 || pid > 4194304) {
+      return null;
+    }
+
     try {
       const { stdout } = await execFileAsync(
         'tasklist.exe',
@@ -55,13 +102,7 @@ export class WindowsProcessInspector implements IProcessInspector {
         }
       );
 
-      // Example CSV output: "node.exe","14208","Console","1","45,200 K"
-      const match = stdout.match(/"([^"]+)"/);
-      if (match && match[1] && !match[1].toLowerCase().includes('no tasks')) {
-        return match[1];
-      }
-
-      return null;
+      return WindowsProcessInspector.parseTasklistName(stdout);
     } catch {
       return null;
     }

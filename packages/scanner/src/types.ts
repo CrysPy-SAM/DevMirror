@@ -45,6 +45,12 @@ export interface ScanOptions {
    * Defaults to true.
    */
   includeProcessInfo?: boolean;
+
+  /**
+   * Whether to allow insecure / self-signed TLS certificates when probing HTTPS servers.
+   * Defaults to false (strict certificate validation enabled).
+   */
+  allowInsecureCertificates?: boolean;
 }
 
 export interface ValidateOptions {
@@ -59,6 +65,21 @@ export interface ValidateOptions {
    * Defaults to true.
    */
   includeProcessInfo?: boolean;
+
+  /**
+   * Whether to allow insecure / self-signed TLS certificates when probing HTTPS servers.
+   * Defaults to false (strict certificate validation enabled).
+   */
+  allowInsecureCertificates?: boolean;
+}
+
+export interface ProbeHttpOptions {
+  timeoutMs?: number;
+  isHttps?: boolean;
+  allowInsecureCertificates?: boolean;
+  path?: string;
+  maxRedirects?: number;
+  redirectCount?: number;
 }
 
 export interface ProbeResult {
