@@ -1,16 +1,27 @@
 /**
  * @devmirror/core - Control API
  * Fastify HTTP server strictly bound to 127.0.0.1 for local management and Chrome Extension IPC.
+ * Implements exact extension-origin allowlist validation, strict CORS/CSRF protections,
+ * and isolated pairing URL access.
  */
 
 import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from 'fastify';
 import {
   CONTROL_API_AUTH_HEADER,
   CONTROL_API_CSRF_HEADER,
+  CONTROL_API_CLI_HEADER,
+  DEVMIRROR_DEV_EXTENSION_ID,
   type TargetDevServer,
   type SanitizedSessionInfo
 } from '@devmirror/shared';
 import type { SessionManager } from '../session/manager.js';
+
+export interface ValidatedOrigin {
+  isExtension: boolean;
+  isLoopbackWeb: boolean;
+  origin: string;
+  extensionId?: string;
+}
 
 export interface ControlApiOptions {
   port: number;
@@ -19,6 +30,8 @@ export interface ControlApiOptions {
   proxyPort: number;
   controlToken?: string;
   requireAuth?: boolean;
+  allowedExtensionIds?: string[];
+  onDiscover?: () => Promise<any[]>;
 }
 
 export class ControlApi {
@@ -29,6 +42,8 @@ export class ControlApi {
   private readonly proxyPort: number;
   private readonly controlToken?: string;
   private readonly requireAuth: boolean;
+  private readonly allowedExtensionIds: string[];
+  private readonly onDiscover?: () => Promise<any[]>;
   private readonly startTime: number;
   private isRunning: boolean = false;
 
@@ -38,8 +53,22 @@ export class ControlApi {
     this.lanIp = options.lanIp;
     this.proxyPort = options.proxyPort;
     this.controlToken = options.controlToken;
-    this.requireAuth = options.requireAuth ?? false; // optional auth check for local CLI/Extension
+    this.requireAuth = options.requireAuth ?? false;
+    this.onDiscover = options.onDiscover;
     this.startTime = Date.now();
+
+    // Build trusted extension ID allowlist (development ID + any configured production/custom IDs)
+    const envIds = process.env.DEVMIRROR_ALLOWED_EXTENSION_IDS
+      ? process.env.DEVMIRROR_ALLOWED_EXTENSION_IDS.split(',').map((id) => id.trim().toLowerCase())
+      : [];
+
+    const customIds = options.allowedExtensionIds
+      ? options.allowedExtensionIds.map((id) => id.trim().toLowerCase())
+      : [];
+
+    this.allowedExtensionIds = Array.from(
+      new Set([DEVMIRROR_DEV_EXTENSION_ID.toLowerCase(), ...envIds, ...customIds])
+    );
 
     this.app = Fastify({
       logger: false
@@ -50,53 +79,151 @@ export class ControlApi {
   }
 
   /**
+   * Validates and parses an incoming Origin header using the URL API.
+   * Rejects malformed schemes, credentials, search, hashes, and non-root paths.
+   */
+  public parseAndValidateOrigin(originStr: string | undefined): ValidatedOrigin | null {
+    if (!originStr || typeof originStr !== 'string') return null;
+
+    try {
+      const url = new URL(originStr);
+
+      // Origin must have no path other than '' or '/', no query, no hash, no userinfo
+      if ((url.pathname !== '' && url.pathname !== '/') || url.search || url.hash || url.username || url.password) {
+        return null;
+      }
+
+      // 1. Chrome Extension Origin: chrome-extension://<32-char-id>
+      if (url.protocol === 'chrome-extension:') {
+        const extensionId = url.hostname.toLowerCase();
+        // Chrome extension IDs are strictly 32 lowercase letters [a-p]
+        if (!/^[a-p]{32}$/.test(extensionId)) {
+          return null;
+        }
+
+        // Must match our explicit allowlist
+        if (!this.allowedExtensionIds.includes(extensionId)) {
+          return null;
+        }
+
+        return {
+          isExtension: true,
+          isLoopbackWeb: false,
+          origin: `chrome-extension://${extensionId}`,
+          extensionId
+        };
+      }
+
+      // 2. Loopback Web Origin: http(s)://127.0.0.1 or http(s)://localhost
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        const hostname = url.hostname.toLowerCase();
+        if (hostname === '127.0.0.1' || hostname === 'localhost') {
+          return {
+            isExtension: false,
+            isLoopbackWeb: true,
+            origin: url.origin
+          };
+        }
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Applies strict Host, Origin, and CSRF validations.
    */
   private setupSecurityHooks(): void {
-    // 1. Strict Host header validation
+    // 1. Strict Host header validation (must strictly be 127.0.0.1 or localhost)
     this.app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
       const host = request.headers.host;
       if (!host) {
         return reply.status(400).send({ error: 'Missing Host header' });
       }
 
-      // Allow only 127.0.0.1 or localhost with optional port
       const hostPattern = /^(127\.0\.0\.1|localhost)(:\d+)?$/i;
       if (!hostPattern.test(host)) {
         return reply.status(403).send({ error: 'Forbidden: Invalid Host header' });
       }
     });
 
-    // 2. Strict Origin validation (protects against browser drive-by attacks from untrusted websites)
+    // 2. Strict Origin validation for all requests carrying an Origin header
     this.app.addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
-      const origin = request.headers.origin;
-      if (!origin || origin === 'null') {
-        // Non-browser or same-origin / extension local request
+      const originHeader = request.headers.origin;
+      if (!originHeader || originHeader === 'null') {
+        // Non-browser local CLI / script request
         return;
       }
 
-      // Allow loopback origins and Chrome/Edge extensions
-      const allowedOriginPattern = /^(https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?|chrome-extension:\/\/[a-z]+)$/i;
-      if (!allowedOriginPattern.test(origin)) {
+      const validated = this.parseAndValidateOrigin(originHeader);
+      if (!validated) {
         return reply.status(403).send({ error: 'Forbidden: Cross-origin request denied' });
       }
     });
 
-    // 3. CSRF & Custom Header Protection for mutating operations (POST, DELETE)
+    // 3. Preflight OPTIONS handler with exact matching origin
+    this.app.options('/*', async (request: FastifyRequest, reply: FastifyReply) => {
+      const originHeader = request.headers.origin;
+      if (!originHeader) {
+        return reply.status(400).send({ error: 'Missing Origin in preflight' });
+      }
+
+      const validated = this.parseAndValidateOrigin(originHeader);
+      if (!validated) {
+        return reply.status(403).send({ error: 'Forbidden: Untrusted preflight origin' });
+      }
+
+      const requestedMethod = request.headers['access-control-request-method'];
+      const allowedMethods = ['GET', 'POST', 'DELETE', 'OPTIONS'];
+      if (requestedMethod && !allowedMethods.includes(requestedMethod.toUpperCase())) {
+        return reply.status(403).send({ error: 'Forbidden: Disallowed method in preflight' });
+      }
+
+      reply
+        .header('Access-Control-Allow-Origin', validated.origin)
+        .header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+        .header(
+          'Access-Control-Allow-Headers',
+          `Content-Type, ${CONTROL_API_CSRF_HEADER}, ${CONTROL_API_AUTH_HEADER}, ${CONTROL_API_CLI_HEADER}`
+        )
+        .header('Access-Control-Max-Age', '86400')
+        .status(204)
+        .send();
+    });
+
+    // 4. Set exact CORS headers on allowed responses
+    this.app.addHook('onSend', async (request: FastifyRequest, reply: FastifyReply) => {
+      const originHeader = request.headers.origin;
+      if (originHeader && originHeader !== 'null') {
+        const validated = this.parseAndValidateOrigin(originHeader);
+        if (validated) {
+          reply.header('Access-Control-Allow-Origin', validated.origin);
+          reply.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+          reply.header(
+            'Access-Control-Allow-Headers',
+            `Content-Type, ${CONTROL_API_CSRF_HEADER}, ${CONTROL_API_AUTH_HEADER}, ${CONTROL_API_CLI_HEADER}`
+          );
+        }
+      }
+    });
+
+    // 5. CSRF & Custom Header Protection for mutating operations (POST, DELETE)
     this.app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
       if (['POST', 'DELETE', 'PUT', 'PATCH'].includes(request.method)) {
         const csrfHeader = request.headers[CONTROL_API_CSRF_HEADER];
         const authHeader = request.headers[CONTROL_API_AUTH_HEADER];
+        const cliHeader = request.headers[CONTROL_API_CLI_HEADER];
 
-        // Ensure mutating requests originate from trusted local clients capable of sending custom headers
-        if (!csrfHeader && !authHeader) {
+        if (!csrfHeader && !authHeader && !cliHeader) {
           return reply.status(403).send({
             error: `Forbidden: Mutating operations require ${CONTROL_API_CSRF_HEADER} or ${CONTROL_API_AUTH_HEADER} header`
           });
         }
       }
 
-      // 4. Optional authentication check
+      // Optional authentication check
       if (this.requireAuth && this.controlToken) {
         if (request.url !== '/health') {
           const incomingToken = request.headers[CONTROL_API_AUTH_HEADER];
@@ -121,7 +248,7 @@ export class ControlApi {
       };
     });
 
-    // Get current sanitized session
+    // Get current sanitized session (token is masked)
     this.app.get('/api/v1/session', async (_request, reply) => {
       const sanitized = this.sessionManager.getSanitizedSession();
       if (!sanitized) {
@@ -135,6 +262,54 @@ export class ControlApi {
       };
     });
 
+    // Get unmasked pairing URL (strictly restricted to trusted extension or authenticated CLI)
+    this.app.get('/api/v1/session/pairing-url', async (request: FastifyRequest, reply: FastifyReply) => {
+      const originHeader = request.headers.origin;
+
+      if (originHeader && originHeader !== 'null') {
+        const validated = this.parseAndValidateOrigin(originHeader);
+        // Strictly prohibit localhost web origins from accessing the pairing URL
+        if (!validated || !validated.isExtension) {
+          return reply.status(403).send({
+            error: 'Forbidden: Localhost websites are not authorized to access pairing URLs'
+          });
+        }
+      } else {
+        // Non-browser CLI access: must provide custom intent header
+        const cliHeader = request.headers[CONTROL_API_CLI_HEADER];
+        const csrfHeader = request.headers[CONTROL_API_CSRF_HEADER];
+        const authHeader = request.headers[CONTROL_API_AUTH_HEADER];
+        if (!cliHeader && !csrfHeader && !authHeader) {
+          return reply.status(403).send({
+            error: 'Forbidden: CLI access requires custom header authentication'
+          });
+        }
+      }
+
+      const session = this.sessionManager.getSession();
+      if (!session) {
+        return reply.status(404).send({ error: 'No active session' });
+      }
+
+      // Return ONLY pairingUrl; no separate raw token field
+      return {
+        pairingUrl: session.mobileUrl
+      };
+    });
+
+    // Discover running development servers
+    this.app.get('/api/v1/discover', async () => {
+      if (this.onDiscover) {
+        try {
+          const servers = await this.onDiscover();
+          return { servers, total: servers.length };
+        } catch {
+          return { servers: [], total: 0 };
+        }
+      }
+      return { servers: [], total: 0 };
+    });
+
     // Create or update session
     this.app.post<{
       Body: {
@@ -142,6 +317,7 @@ export class ControlApi {
           port: number;
           host?: string;
           framework?: string;
+          frameworkName?: string;
           isHttps?: boolean;
           title?: string;
         };
@@ -168,6 +344,7 @@ export class ControlApi {
         host,
         port,
         framework: (body.target.framework as TargetDevServer['framework']) ?? 'unknown',
+        frameworkName: body.target.frameworkName,
         isHttps: body.target.isHttps ?? false,
         title: body.target.title
       };
@@ -232,9 +409,6 @@ export class ControlApi {
     this.isRunning = false;
   }
 
-  /**
-   * Internal Fastify instance for testing with inject().
-   */
   public get fastify(): FastifyInstance {
     return this.app;
   }

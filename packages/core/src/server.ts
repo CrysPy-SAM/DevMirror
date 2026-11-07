@@ -23,6 +23,8 @@ export interface DevMirrorEngineOptions {
   sessionTtlMs?: number;
   enableOverlay?: boolean; // Default must be false!
   enableGracefulShutdown?: boolean;
+  allowedExtensionIds?: string[];
+  onDiscover?: () => Promise<any[]>;
 }
 
 export class DevMirrorEngine {
@@ -82,7 +84,9 @@ export class DevMirrorEngine {
       port: controlPort,
       sessionManager: this.sessionManager,
       lanIp: this.activeLanIp,
-      proxyPort
+      proxyPort,
+      allowedExtensionIds: this.options.allowedExtensionIds,
+      onDiscover: this.options.onDiscover
     });
     await this.controlApi.start();
 

@@ -12,6 +12,16 @@ export const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
 
 export const CONTROL_API_AUTH_HEADER = 'x-devmirror-token';
 export const CONTROL_API_CSRF_HEADER = 'x-devmirror-csrf';
+export const CONTROL_API_CLI_HEADER = 'x-devmirror-cli';
+
+/**
+ * Deterministic Development Chrome Extension Identity
+ * Derived from the RSA 2048-bit SPKI public key embedded in apps/extension/manifest.json.
+ * Production extension IDs are explicitly configured and must never use unverified placeholders.
+ */
+export const DEVMIRROR_DEV_EXTENSION_ID = 'kmcaoghdokfdbadplofpkeabloldmoga';
+export const DEVMIRROR_DEV_EXTENSION_KEY =
+  'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1PyF+IbBRgixwhFyBthP93Oqzw7Rcp85hCjbptJqV0pAPQGX5ZTEMSIbgb6f3KSp6Em7qu7Tt9vib1KVKqf47BJNTqWTfJ4PgvIl0Xn4BFZdsm6g+/xGUru2hLHIOh8FzVn5w3r3PgbsWDriOW/HjK9HY0Sk1k35Jw9HzOiThOMDRT8pr339uZrNLVSPMG1tHq/fVNPItU+kW87co3ZhdF+IQi3hixVaVHd2Hpvz+zCmCgcnE+jgj3b2htEhE8wBK1iFI1095w6Degsf9LjgTi9IjT2qrtOKYb8rtUoOeYHmABgD2nahsBj2Lev6DmgQLMTvZEN+bB3eJCjB1IK81wIDAQAB';
 
 export const COMMON_DEV_PORTS = [
   3000, // Next.js / CRA / Nuxt

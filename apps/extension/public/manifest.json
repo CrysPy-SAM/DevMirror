@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "DevMirror - Mobile Preview Dashboard",
+  "version": "0.1.0",
+  "description": "Browser companion dashboard for DevMirror - Preview local websites on mobile with live HMR",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1PyF+IbBRgixwhFyBthP93Oqzw7Rcp85hCjbptJqV0pAPQGX5ZTEMSIbgb6f3KSp6Em7qu7Tt9vib1KVKqf47BJNTqWTfJ4PgvIl0Xn4BFZdsm6g+/xGUru2hLHIOh8FzVn5w3r3PgbsWDriOW/HjK9HY0Sk1k35Jw9HzOiThOMDRT8pr339uZrNLVSPMG1tHq/fVNPItU+kW87co3ZhdF+IQi3hixVaVHd2Hpvz+zCmCgcnE+jgj3b2htEhE8wBK1iFI1095w6Degsf9LjgTi9IjT2qrtOKYb8rtUoOeYHmABgD2nahsBj2Lev6DmgQLMTvZEN+bB3eJCjB1IK81wIDAQAB",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "action": {
+    "default_popup": "index.html",
+    "default_title": "DevMirror Mobile Preview Dashboard"
+  }
+}
