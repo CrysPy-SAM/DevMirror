@@ -29,7 +29,7 @@ describe('CLI Arguments Parser', () => {
     expect(parseCliArgs(['-h']).help).toBe(true);
     expect(parseCliArgs(['--version']).version).toBe(true);
     expect(parseCliArgs(['-v']).version).toBe(true);
-    expect(HELP_TEXT).toContain('npx devmirror');
+    expect(HELP_TEXT).toContain('npx devmirror-cli');
     expect(CLI_VERSION).toBe('0.1.0');
   });
 

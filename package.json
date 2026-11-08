@@ -9,12 +9,15 @@
     "url": "https://github.com/CrysPy-SAM/DevMirror.git"
   },
   "packageManager": "pnpm@10.15.0",
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "bin": {
     "devmirror": "./packages/cli/bin/devmirror.js"
   },
   "scripts": {
     "build": "pnpm -r run build",
-    "dev": "pnpm --filter @devmirror/cli run dev",
+    "dev": "pnpm --filter devmirror-cli run dev",
     "devmirror": "node packages/cli/bin/devmirror.js",
     "test": "vitest run",
     "test:watch": "vitest",

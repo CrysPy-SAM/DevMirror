@@ -8,12 +8,23 @@
     "url": "https://github.com/CrysPy-SAM/DevMirror.git",
     "directory": "packages/core"
   },
+  "keywords": [
+    "devmirror",
+    "reverse-proxy",
+    "hmr-proxy",
+    "fastify",
+    "websocket"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "publishConfig": {
     "access": "public"
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "type": "module",
   "main": "./dist/index.js",

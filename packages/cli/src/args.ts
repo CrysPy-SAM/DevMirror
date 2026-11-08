@@ -22,7 +22,8 @@ export const HELP_TEXT = `
 DevMirror - Instant Mobile Preview for Local Web Development
 
 USAGE:
-  $ npx devmirror [options]
+  $ npx devmirror-cli [options]
+  $ devmirror [options]
 
 OPTIONS:
   -p, --port <port>                 Manually specify target development server port

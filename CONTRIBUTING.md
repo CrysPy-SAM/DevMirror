@@ -13,7 +13,7 @@ DevMirror is organized as a `pnpm` workspace monorepo:
 | **`@devmirror/shared`** | `packages/shared` | Shared TypeScript contracts, protocol constants, IPC schemas, and security utilities. |
 | **`@devmirror/core`** | `packages/core` | LAN reverse proxy, Fastify Control API, HMR WebSocket adapters, HTML streaming rewriter, session manager, and network interface resolver. |
 | **`@devmirror/scanner`** | `packages/scanner` | Port scanner, OS process inspector (Windows `netstat`/`tasklist`, POSIX `lsof`/`ss`/`ps`), and HTTP framework detector. |
-| **`@devmirror/cli`** | `packages/cli` | Terminal interface, ANSI QR code generator, interactive keyboard shortcuts, and engine runner. |
+| **`devmirror-cli`** | `packages/cli` | Terminal interface, ANSI QR code generator, interactive keyboard shortcuts, and engine runner. |
 | **`@devmirror/extension`** | `apps/extension` | Manifest V3 Chrome Extension providing a browser popup dashboard for pairing and session control. |
 
 ---

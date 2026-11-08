@@ -1,13 +1,26 @@
 {
-  "name": "@devmirror/cli",
+  "name": "devmirror-cli",
   "version": "0.1.0",
   "type": "module",
-  "description": "DevMirror CLI - Instant mobile preview for local web development",
+  "description": "DevMirror CLI - Instant mobile browser preview with preserved framework HMR",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/CrysPy-SAM/DevMirror.git",
     "directory": "packages/cli"
+  },
+  "keywords": [
+    "mobile-preview",
+    "vite",
+    "nextjs",
+    "hmr",
+    "qr-code",
+    "responsive-design",
+    "local-development",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -18,7 +31,8 @@
   "files": [
     "dist",
     "bin",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
