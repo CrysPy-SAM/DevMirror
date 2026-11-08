@@ -188,6 +188,15 @@ export class ControlApi {
         return reply.status(403).send({ error: 'Forbidden: Disallowed method in preflight' });
       }
 
+      // SEC-01: Reject preflights for mutating operations from non-extension browser origins
+      if (['POST', 'DELETE', 'PUT', 'PATCH'].includes(requestedMethod?.toUpperCase() || '')) {
+        if (!validated.isExtension) {
+          return reply.status(403).send({
+            error: 'Forbidden: Browser web origins are not authorized for mutating operations'
+          });
+        }
+      }
+
       reply
         .header('Access-Control-Allow-Origin', validated.origin)
         .header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
@@ -216,17 +225,38 @@ export class ControlApi {
       }
     });
 
-    // 5. CSRF & Custom Header Protection for mutating operations (POST, DELETE)
+    // 5. Strict Authorization & CSRF Protection for mutating operations (POST, DELETE, PUT, PATCH)
     this.app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
       if (['POST', 'DELETE', 'PUT', 'PATCH'].includes(request.method)) {
-        const csrfHeader = request.headers[CONTROL_API_CSRF_HEADER];
-        const authHeader = request.headers[CONTROL_API_AUTH_HEADER];
-        const cliHeader = request.headers[CONTROL_API_CLI_HEADER];
+        const originHeader = request.headers.origin;
 
-        if (!csrfHeader && !authHeader && !cliHeader) {
-          return reply.status(403).send({
-            error: `Forbidden: Mutating operations require ${CONTROL_API_CSRF_HEADER} or ${CONTROL_API_AUTH_HEADER} header`
-          });
+        if (originHeader && originHeader !== 'null') {
+          // Browser / Extension request
+          const validated = this.parseAndValidateOrigin(originHeader);
+          if (!validated || !validated.isExtension) {
+            return reply.status(403).send({
+              error: 'Forbidden: Browser web origins are not authorized for mutating operations'
+            });
+          }
+
+          // Even for trusted extension, CSRF header is mandatory
+          const csrfHeader = request.headers[CONTROL_API_CSRF_HEADER];
+          if (!csrfHeader) {
+            return reply.status(403).send({
+              error: `Forbidden: Mutating operations require ${CONTROL_API_CSRF_HEADER} header`
+            });
+          }
+        } else {
+          // Non-browser local CLI / script request
+          // Must explicitly provide CLI intent header or auth token
+          const cliHeader = request.headers[CONTROL_API_CLI_HEADER];
+          const authHeader = request.headers[CONTROL_API_AUTH_HEADER];
+
+          if (!cliHeader && !authHeader) {
+            return reply.status(403).send({
+              error: `Forbidden: CLI mutating operations require ${CONTROL_API_CLI_HEADER} or ${CONTROL_API_AUTH_HEADER} header`
+            });
+          }
         }
       }
 
@@ -284,9 +314,8 @@ export class ControlApi {
       } else {
         // Non-browser CLI access: must provide custom intent header
         const cliHeader = request.headers[CONTROL_API_CLI_HEADER];
-        const csrfHeader = request.headers[CONTROL_API_CSRF_HEADER];
         const authHeader = request.headers[CONTROL_API_AUTH_HEADER];
-        if (!cliHeader && !csrfHeader && !authHeader) {
+        if (!cliHeader && !authHeader) {
           return reply.status(403).send({
             error: 'Forbidden: CLI access requires custom header authentication'
           });
@@ -304,8 +333,27 @@ export class ControlApi {
       };
     });
 
-    // Discover running development servers
-    this.app.get('/api/v1/discover', async () => {
+    // Discover running development servers (restricted to trusted extension or authenticated CLI)
+    this.app.get('/api/v1/discover', async (request: FastifyRequest, reply: FastifyReply) => {
+      const originHeader = request.headers.origin;
+
+      if (originHeader && originHeader !== 'null') {
+        const validated = this.parseAndValidateOrigin(originHeader);
+        if (!validated || !validated.isExtension) {
+          return reply.status(403).send({
+            error: 'Forbidden: Server discovery is restricted to trusted extensions'
+          });
+        }
+      } else {
+        const cliHeader = request.headers[CONTROL_API_CLI_HEADER];
+        const authHeader = request.headers[CONTROL_API_AUTH_HEADER];
+        if (!cliHeader && !authHeader) {
+          return reply.status(403).send({
+            error: 'Forbidden: CLI access requires custom header authentication'
+          });
+        }
+      }
+
       if (this.onDiscover) {
         try {
           const servers = await this.onDiscover();
@@ -389,8 +437,27 @@ export class ControlApi {
       };
     });
 
-    // List connected devices
-    this.app.get('/api/v1/devices', async () => {
+    // List connected devices (restricted to trusted extension or authenticated CLI)
+    this.app.get('/api/v1/devices', async (request: FastifyRequest, reply: FastifyReply) => {
+      const originHeader = request.headers.origin;
+
+      if (originHeader && originHeader !== 'null') {
+        const validated = this.parseAndValidateOrigin(originHeader);
+        if (!validated || !validated.isExtension) {
+          return reply.status(403).send({
+            error: 'Forbidden: Device inspection is restricted to trusted extensions'
+          });
+        }
+      } else {
+        const cliHeader = request.headers[CONTROL_API_CLI_HEADER];
+        const authHeader = request.headers[CONTROL_API_AUTH_HEADER];
+        if (!cliHeader && !authHeader) {
+          return reply.status(403).send({
+            error: 'Forbidden: CLI access requires custom header authentication'
+          });
+        }
+      }
+
       const devices = this.sessionManager.getConnectedDevices();
       return {
         devices,
