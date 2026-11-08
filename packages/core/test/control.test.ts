@@ -181,13 +181,13 @@ describe('ControlApi', () => {
 
   describe('Pairing URL Security (/api/v1/session/pairing-url)', () => {
     beforeEach(async () => {
-      // Create an active session
+      // Create an active session via CLI
       await controlApi.fastify.inject({
         method: 'POST',
         url: '/api/v1/session',
         headers: {
           host: '127.0.0.1:4100',
-          [CONTROL_API_CSRF_HEADER]: '1'
+          [CONTROL_API_CLI_HEADER]: '1'
         },
         payload: {
           target: { port: 5173, host: '127.0.0.1', framework: 'vite' }
@@ -260,7 +260,7 @@ describe('ControlApi', () => {
         url: '/api/v1/session',
         headers: {
           host: '127.0.0.1:4100',
-          [CONTROL_API_CSRF_HEADER]: '1'
+          [CONTROL_API_CLI_HEADER]: '1'
         }
       });
 
