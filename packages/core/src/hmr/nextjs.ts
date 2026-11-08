@@ -11,7 +11,7 @@ export class NextjsHmrAdapter implements IHmrAdapter {
 
   public matches(urlPath: string): boolean {
     const cleanPath = urlPath.split('?')[0];
-    return cleanPath.startsWith('/_next/webpack-hmr');
+    return cleanPath.startsWith('/_next/webpack-hmr') || cleanPath.startsWith('/_next/hmr');
   }
 
   public normalizeHeaders(

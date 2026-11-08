@@ -11,7 +11,12 @@ export class AngularHmrAdapter implements IHmrAdapter {
 
   public matches(urlPath: string): boolean {
     const cleanPath = urlPath.split('?')[0];
-    return cleanPath === '/ng-cli-ws' || cleanPath === '/@vite-hmr';
+    return (
+      cleanPath === '/ng-cli-ws' ||
+      cleanPath === '/@vite-hmr' ||
+      cleanPath === '/' ||
+      cleanPath === ''
+    );
   }
 
   public normalizeHeaders(
@@ -27,8 +32,8 @@ export class AngularHmrAdapter implements IHmrAdapter {
     }
 
     normalized['host'] = `${target.host}:${target.port}`;
-    const scheme = target.isHttps ? 'https' : 'http';
-    normalized['origin'] = `${scheme}://${target.host}:${target.port}`;
+    // Strip external origin so modern Vite-based Angular dev server accepts the connection
+    delete normalized['origin'];
 
     return normalized;
   }

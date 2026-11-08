@@ -33,8 +33,7 @@ export class NuxtHmrAdapter implements IHmrAdapter {
     }
 
     normalized['host'] = `${target.host}:${target.port}`;
-    const scheme = target.isHttps ? 'https' : 'http';
-    normalized['origin'] = `${scheme}://${target.host}:${target.port}`;
+    delete normalized['origin'];
 
     return normalized;
   }
