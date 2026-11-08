@@ -14,7 +14,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "clean": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\"",
+    "clean": "node -e \"try { fs.rmSync('dist', { recursive: true, force: true }); fs.rmSync('tsconfig.tsbuildinfo', { force: true }); } catch {}\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

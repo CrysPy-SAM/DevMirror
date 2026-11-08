@@ -584,6 +584,13 @@ export class LanProxyServer {
     this.activeSockets.clear();
 
     return new Promise((resolve) => {
+      if (typeof (this.server as any).closeAllConnections === 'function') {
+        try {
+          (this.server as any).closeAllConnections();
+        } catch {
+          // ignore
+        }
+      }
       this.server!.close(() => {
         this.isRunning = false;
         this.server = null;

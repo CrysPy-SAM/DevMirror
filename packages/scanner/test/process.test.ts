@@ -40,6 +40,12 @@ describe('ProcessInspector', () => {
     expect(result).toBeNull();
   });
 
+  it('should instantiate default OS inspector and query ports safely without throwing', async () => {
+    const inspector = new ProcessInspector();
+    const result = await inspector.findProcessByPort(65431);
+    expect(result).toBeNull();
+  });
+
   describe('Windows Process Parsing (IPv4, IPv6, and Argument Security)', () => {
     it('should parse IPv4 listening lines correctly', () => {
       const netstatOutput = `

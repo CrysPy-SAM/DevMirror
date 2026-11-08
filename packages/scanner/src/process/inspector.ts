@@ -6,6 +6,7 @@
 import os from 'node:os';
 import type { IProcessInspector, ProcessInfo } from './types.js';
 import { WindowsProcessInspector } from './windows.js';
+import { PosixProcessInspector } from './posix.js';
 
 export class ProcessInspector implements IProcessInspector {
   private readonly delegate: IProcessInspector | null;
@@ -16,8 +17,7 @@ export class ProcessInspector implements IProcessInspector {
     } else if (os.platform() === 'win32') {
       this.delegate = new WindowsProcessInspector();
     } else {
-      // Future milestone: Linux/macOS lsof inspector
-      this.delegate = null;
+      this.delegate = new PosixProcessInspector();
     }
   }
 

@@ -208,6 +208,13 @@ export class DevMirrorCliRunner {
         // ignore
       }
     }
+    if (process.stdin.isTTY && typeof process.stdin.pause === 'function') {
+      try {
+        process.stdin.pause();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   /**

@@ -80,6 +80,8 @@ export async function runCli(argv: string[] = process.argv.slice(2)): Promise<nu
     });
   } catch (err: any) {
     TerminalDisplay.printError('Startup Error', err.message);
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
     await runner.stop();
     return 1;
   }
