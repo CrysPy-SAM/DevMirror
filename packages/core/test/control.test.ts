@@ -279,11 +279,14 @@ describe('ControlApi', () => {
   });
 
   describe('Discovery Endpoint (/api/v1/discover)', () => {
-    it('should return discovered dev servers without starting a session', async () => {
+    it('should return discovered dev servers for authenticated CLI client without starting a session', async () => {
       const response = await controlApi.fastify.inject({
         method: 'GET',
         url: '/api/v1/discover',
-        headers: { host: '127.0.0.1:4100' }
+        headers: {
+          host: '127.0.0.1:4100',
+          [CONTROL_API_CLI_HEADER]: '1'
+        }
       });
 
       expect(response.statusCode).toBe(200);
@@ -300,14 +303,196 @@ describe('ControlApi', () => {
       });
       expect(sessionRes.statusCode).toBe(404);
     });
+
+    it('should permit discovered dev servers for trusted Chrome Extension', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'GET',
+        url: '/api/v1/discover',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: `chrome-extension://${DEVMIRROR_DEV_EXTENSION_ID}`
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(body.servers.length).toBe(1);
+    });
+
+    it('should REJECT localhost web origins from calling /api/v1/discover (403 Forbidden)', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'GET',
+        url: '/api/v1/discover',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: 'http://localhost:3000'
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toContain('restricted to trusted extensions');
+    });
+
+    it('should REJECT arbitrary external origins from calling /api/v1/discover (403 Forbidden)', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'GET',
+        url: '/api/v1/discover',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: 'http://malicious.example.com'
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('should REJECT /api/v1/discover without Origin and without CLI header (403 Forbidden)', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'GET',
+        url: '/api/v1/discover',
+        headers: { host: '127.0.0.1:4100' }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toContain('CLI access requires custom header');
+    });
   });
 
-  describe('Session Management & CSRF', () => {
-    it('should enforce CSRF protection on mutating methods without custom headers', async () => {
+  describe('Device Inspection Endpoint (/api/v1/devices)', () => {
+    it('should permit trusted Chrome Extension to inspect devices', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'GET',
+        url: '/api/v1/devices',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: `chrome-extension://${DEVMIRROR_DEV_EXTENSION_ID}`
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body);
+      expect(Array.isArray(body.devices)).toBe(true);
+    });
+
+    it('should REJECT localhost web origins from inspecting devices (403 Forbidden)', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'GET',
+        url: '/api/v1/devices',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: 'http://localhost:3000'
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toContain('restricted to trusted extensions');
+    });
+
+    it('should REJECT /api/v1/devices without Origin and without CLI header (403 Forbidden)', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'GET',
+        url: '/api/v1/devices',
+        headers: { host: '127.0.0.1:4100' }
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+  });
+
+  describe('Session Management & CSRF Hardening (SEC-01)', () => {
+    it('should REJECT localhost web origins from mutating session even if CSRF header is sent (403 Forbidden)', async () => {
       const response = await controlApi.fastify.inject({
         method: 'POST',
         url: '/api/v1/session',
-        headers: { host: '127.0.0.1:4100' },
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: 'http://localhost:3000',
+          [CONTROL_API_CSRF_HEADER]: '1'
+        },
+        payload: {
+          target: { port: 5173, host: '127.0.0.1' }
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toContain('Browser web origins are not authorized');
+    });
+
+    it('should REJECT localhost preflight OPTIONS for mutating methods (403 Forbidden)', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'OPTIONS',
+        url: '/api/v1/session',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: 'http://localhost:3000',
+          'access-control-request-method': 'POST'
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(JSON.parse(response.body).error).toContain('Browser web origins are not authorized');
+    });
+
+    it('should REJECT mutating requests with origin: null (403 Forbidden)', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: 'null',
+          [CONTROL_API_CSRF_HEADER]: '1'
+        },
+        payload: {
+          target: { port: 5173, host: '127.0.0.1' }
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+    });
+
+    it('should allow trusted Chrome Extension with CSRF header to mutate session', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: `chrome-extension://${DEVMIRROR_DEV_EXTENSION_ID}`,
+          [CONTROL_API_CSRF_HEADER]: '1'
+        },
+        payload: {
+          target: { port: 5173, host: '127.0.0.1', framework: 'vite' }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).success).toBe(true);
+    });
+
+    it('should allow local CLI with x-devmirror-cli header when Origin is absent', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        headers: {
+          host: '127.0.0.1:4100',
+          [CONTROL_API_CLI_HEADER]: '1'
+        },
+        payload: {
+          target: { port: 3000, host: '127.0.0.1', framework: 'nextjs' }
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body).success).toBe(true);
+    });
+
+    it('should enforce CSRF protection on mutating methods without custom headers for extension', async () => {
+      const response = await controlApi.fastify.inject({
+        method: 'POST',
+        url: '/api/v1/session',
+        headers: {
+          host: '127.0.0.1:4100',
+          origin: `chrome-extension://${DEVMIRROR_DEV_EXTENSION_ID}`
+        },
         payload: {
           target: { port: 5173 }
         }
@@ -323,7 +508,7 @@ describe('ControlApi', () => {
         url: '/api/v1/session',
         headers: {
           host: '127.0.0.1:4100',
-          [CONTROL_API_CSRF_HEADER]: '1'
+          [CONTROL_API_CLI_HEADER]: '1'
         },
         payload: {
           target: { port: 80 }
@@ -340,7 +525,7 @@ describe('ControlApi', () => {
         url: '/api/v1/session',
         headers: {
           host: '127.0.0.1:4100',
-          [CONTROL_API_CSRF_HEADER]: '1'
+          [CONTROL_API_CLI_HEADER]: '1'
         },
         payload: {
           target: { port: 8080, host: '169.254.169.254' }
