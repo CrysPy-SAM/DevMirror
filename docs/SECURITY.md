@@ -1,59 +1,42 @@
-# DevMirror: Threat Model & Security Specification
+# DevMirror Threat Model & Security Specification
 
-**Document Status:** Approved Architecture Plan  
-**Target Version:** v0.1.0 – v1.0.0  
-**Author:** DevMirror Architecture & Security Engineering Team  
+**Document Version:** 1.0.0 (Production Release)  
+**Status:** Approved Security Architecture & Implementation Review  
+**Monorepo Path:** `D:\code\DevMirror`  
 
 ---
 
-## 1. Security Context & Threat Landscape
+## 1. Threat Landscape & Security Mandate
 
-Local development servers (such as Vite, Next.js, and Webpack) are intentionally engineered for fast feedback and developer convenience, not production-grade network isolation. By default, dev servers:
+Local development servers (such as Vite, Next.js, and Webpack Dev Server) are designed for rapid feedback, not production-grade network isolation. By default, dev servers:
 - Run without authentication.
 - Read and expose local source code, environment variables, source maps, and API secrets.
 - Often contain debug or evaluation endpoints (e.g., Fast Refresh, error overlay RPCs) that could allow arbitrary code execution if exposed to an attacker.
 
 When a developer runs `devmirror` to share their local project over a Local Area Network (Wi-Fi), their project could become reachable by other devices on the same subnet (e.g., shared office networks, public coffee shop Wi-Fi).
 
-**DevMirror's security mandate:** Under no circumstances should running DevMirror degrade the workstation's security posture or expose local development servers to unauthenticated network peers.
+**DevMirror Security Mandate:** Under no circumstances should running DevMirror degrade the workstation's security posture, leak developer secrets, or expose local development servers to unauthenticated network peers or malicious local browser scripts.
 
 ---
 
-## 2. STRIDE Threat Model
+## 2. Implemented STRIDE Threat Matrix
 
-```
-+--------------------------------------------------------------------------------------------------+
-|                                    STRIDE THREAT MATRIX                                          |
-+--------------------------------------------------------------------------------------------------+
-| Threat Category             | Specific Vector                          | DevMirror Countermeasure|
-+-----------------------------+------------------------------------------+-------------------------+
-| S - Spoofing Identity       | Rogue device on LAN guessing session URL | 256-bit CSPRNG token +  |
-|                             | or impersonating the mobile client.      | Device Pairing Guard.   |
-+-----------------------------+------------------------------------------+-------------------------+
-| T - Tampering with Data     | Man-in-the-middle packet injection on    | URL token strip + cookie|
-|                             | unencrypted HTTP Wi-Fi traffic.          | + optional local TLS.   |
-+-----------------------------+------------------------------------------+-------------------------+
-| R - Repudiation             | Unaudited client accessing project.      | Client registry + active|
-|                             |                                          | device log in CLI & Ext.|
-+-----------------------------+------------------------------------------+-------------------------+
-| I - Information Disclosure  | Attacker scanning LAN accessing `.env`,   | Strict auth gate before |
-|                             | source maps, or internal API proxies.    | any proxy dispatch.     |
-+-----------------------------+------------------------------------------+-------------------------+
-| D - Denial of Service       | Flood of connections exhausting file     | Rate limiting + max     |
-|                             | descriptors or proxy memory.             | client connection limit.|
-+-----------------------------+------------------------------------------+-------------------------+
-| E - Elevation of Privilege  | SSRF or Path Traversal escaping the      | Strict loopback target  |
-|                             | target port to internal LAN services.    | validation whitelist.   |
-+-----------------------------+------------------------------------------+-------------------------+
-```
+| Threat Category | Specific Attack Vector | DevMirror Defense & Implementation |
+| :--- | :--- | :--- |
+| **S - Spoofing Identity** | Rogue LAN device guessing session URL or impersonating mobile device. | 256-bit CSPRNG token (`crypto.randomBytes(32).toString('base64url')`). Compared exclusively with `crypto.timingSafeEqual`. |
+| **T - Tampering with Data** | Packet sniffing or manipulation on unencrypted Wi-Fi traffic. | Query token is immediately exchanged for an `HttpOnly`, `SameSite=Lax` cookie and stripped from URL address bar. Supports upstream HTTPS with `--insecure` opt-in. |
+| **R - Repudiation** | Unaudited client accessing project. | Real-time device registry tracking IP, user-agent, and pairing timestamp visible in CLI and Chrome Extension. |
+| **I - Information Disclosure** | Attacker on LAN scanning ports to access `.env`, source code, or internal dev APIs. | Strict auth gate on proxy before any dispatch. Upstream cookie sanitization strips internal token from dev server. |
+| **D - Denial of Service** | Connection flooding exhausting proxy file descriptors or memory. | Execution timeouts on all probers and inspectors; active socket registry destroys lingering sockets on shutdown. |
+| **E - Elevation of Privilege** | Local website using JavaScript `fetch` to take over DevMirror Control API. | Strict Origin checking; preflights for mutating requests from web origins blocked with `403 Forbidden`; extension and CLI headers required. |
 
 ---
 
-## 3. Detailed Security Architecture & Mitigations
+## 3. Detailed Security Architecture & Countermeasures
 
-### 3.1 Network Interface & Binding Segregation
+### 3.1 Dual-Interface Separation
 
-DevMirror implements a dual-port architecture with strict network interface segregation:
+DevMirror strictly segregates external LAN traffic from local control mechanisms:
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -61,124 +44,103 @@ DevMirror implements a dual-port architecture with strict network interface segr
 +-----------------------------------------------------------------------------------+
 
      [ External LAN Interface ]                    [ Local Loopback Interface ]
-         (e.g., 192.168.1.45)                                (127.0.0.1)
-                  |                                               |
-                  v                                               v
-   +------------------------------+                +------------------------------+
-   |   DevMirror Mobile Proxy     |                |  DevMirror Control REST/WS   |
-   |   (Port 4000)                |                |  (Port 4100)                 |
-   +------------------------------+                +------------------------------+
-   | - STRICT TOKEN AUTH REQUIRED |                | - BOUND STRICTLY TO LOOPBACK |
-   | - Only forwards to target    |                | - Extension & CLI IPC only   |
-   | - Rate limited               |                | - Reject any non-127.0.0.1   |
-   +------------------------------+                +------------------------------+
+        (e.g. 192.168.1.45)                                (127.0.0.1)
+                 |                                              |
+                 v                                              v
+   +------------------------------+               +------------------------------+
+   |   LAN Reverse Proxy Server   |               |   Local Fastify Control API  |
+   |   Default: 0.0.0.0:4000      |               |   Default: 127.0.0.1:4100    |
+   +------------------------------+               +------------------------------+
+   | - Ephemeral token auth gate  |               | - Strictly bound to loopback |
+   | - Upstream cookie stripping  |               | - Web origins forbidden      |
+   | - HTML & HMR path rewriting  |               | - Extension & CLI IPC only   |
+   | - Compression handling       |               | - Preflight mutating block   |
+   +------------------------------+               +------------------------------+
 ```
 
-1. **Loopback Control API (`127.0.0.1:4100`):**
-   - Strictly refuses connections arriving from external IP interfaces.
-   - Any attempt to reach `4100` from a remote LAN IP is dropped at the TCP listener level.
-2. **Mobile Proxy (`0.0.0.0:4000` or LAN IP):**
-   - Requires valid authentication token on every HTTP request and WebSocket connection.
-   - Any unauthenticated request immediately receives `401 Unauthorized` with an access-denied landing page (no project assets or headers leaked).
+1. **Local Control API (`127.0.0.1:4100`):**
+   - Strictly bound to loopback `127.0.0.1`. Never listens on `0.0.0.0`.
+   - Incoming TCP connections from external LAN interfaces are dropped at the TCP listener level.
+2. **Mobile LAN Proxy (`0.0.0.0:4000`):**
+   - Listens on LAN interface to accept mobile connections.
+   - Enforces cryptographic authentication on 100% of incoming HTTP and WebSocket requests before any upstream proxying occurs.
 
 ---
 
-### 3.2 Ephemeral Cryptographic Token Authentication
+### 3.2 Ephemeral Token Authentication & Address Bar Scrubbing
 
-Authentication is built on cryptographic primitives using Node.js `node:crypto`:
+Authentication uses Node.js `node:crypto`:
 
 ```typescript
-// Token generation using cryptographically secure random bytes
 const token = crypto.randomBytes(32).toString('base64url'); // 256 bits of entropy
 ```
 
-- **Entropy:** 256 bits of true cryptographic entropy makes brute-forcing computationally infeasible. An attacker attempting 1,000,000 requests/sec would take $1.8 \times 10^{64}$ years to guess the token.
-- **Timing-Safe Comparison:** When comparing session tokens or cookies, DevMirror strictly uses `crypto.timingSafeEqual` to prevent side-channel timing attacks:
-  ```typescript
-  function verifyToken(incoming: string, expected: string): boolean {
-    const a = Buffer.from(incoming);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
-  }
-  ```
-- **URL Parameter Strip & Cookie Promotion:**
-  - The QR code contains `http://<LAN_IP>:4000/?dm_token=<TOKEN>`.
-  - Upon initial access, the proxy sets an `HttpOnly`, `SameSite=Lax` session cookie (`dm_session=<TOKEN>`).
-  - The proxy immediately responds with an HTTP `302 Found` redirecting to `/` (stripping `?dm_token=...` from the browser address bar).
-  - This prevents token leakage via:
-    - Browser history inspection.
-    - Shoulder surfing.
-    - HTTP `Referer` headers on outgoing external links.
+- **Timing-Safe Comparison:** All token comparisons use `crypto.timingSafeEqual` over fixed-length buffers to eliminate side-channel timing attacks.
+- **Address Bar Sanitization (Token Scrubbing):**
+  1. Mobile camera scans QR code containing `http://192.168.1.45:4000/?dm_token=<token>`.
+  2. LAN proxy validates the token.
+  3. Proxy sets an `HttpOnly`, `SameSite=Lax` session cookie (`__devmirror_session=<token>`).
+  4. Proxy immediately responds with an HTTP 302 redirect to `/` (without query parameters).
+  5. The secret token is removed from the mobile browser's address bar and browser history, preventing accidental leakage via copy-pasting, screenshots, or HTTP `Referer` headers.
 
 ---
 
-### 3.3 Interactive Pairing Guard (Zero-Trust Mode)
+### 3.3 Upstream Cookie Isolation
 
-To provide defense-in-depth against shoulder-surfing or QR code interception:
-
-1. When a mobile device scans the QR code for the first time, DevMirror places the connection into a `PENDING_APPROVAL` state.
-2. The CLI terminal and Chrome Extension popup display an interactive pairing prompt:
-   ```
-   [DevMirror Security Guard]
-   New mobile device requesting connection:
-     Device: iPhone 15 Pro (Safari / iOS 17.4)
-     IP:     192.168.1.88
-   Allow access? [Y/n]
-   ```
-3. Until the developer confirms (or enables "Auto-Approve Local Subnet" in CLI flags: `--trust-local`), no proxy traffic or source code is dispatched.
-4. Once approved, the device's unique fingerprint (Client ID + User Agent + Subnet) is recorded in the active session.
+DevMirror isolates its internal session token from the developer's application:
+- When forwarding HTTP requests upstream, `LanProxyServer.stripSessionCookie()` removes `__devmirror_session` from the `Cookie` header.
+- If `__devmirror_session` was the only cookie, the `Cookie` header is removed entirely.
+- All developer application cookies (e.g. `authToken`, `session_id`, `theme`) are preserved untouched.
+- When forwarding WebSocket upgrades, the upgrade request headers undergo identical cookie sanitization.
+- Result: **The DevMirror pairing token never reaches the upstream dev server, server-side logs, or upstream third-party analytics.**
 
 ---
 
-### 3.4 Server-Side Request Forgery (SSRF) & Target Validation
+### 3.4 Control API Hardening against Cross-Origin Attacks
 
-To prevent DevMirror from being abused to scan or attack other internal network services or cloud metadata endpoints:
+A common attack vector against local developer tools is **Drive-By Cross-Origin Request Forgery**: a malicious web page running in the developer's browser makes AJAX or fetch requests to `http://localhost:4100` to manipulate local tools.
 
-1. **Target Whitelisting:** DevMirror's proxy will **only** forward traffic to `127.0.0.1` and `localhost`.
-2. **Blocked Targets:** Forwarding requests to internal private IPs (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local addresses (`169.254.169.254` AWS/GCP metadata), or external domain names is strictly rejected by the proxy router.
-3. **Port Sanitization:** Target ports must be positive integers between `1024` and `65535`. System privileged ports (`< 1024`) are blocked.
+DevMirror neutralizes this attack vector using multi-layered defenses in `packages/core/src/control/api.ts`:
 
----
-
-### 3.5 Header Sanitization & Information Leakage Prevention
-
-When proxying requests between the mobile browser and the local dev server:
-
-1. **Developer Cookie Isolation:** Cookies originating from the mobile browser are scoped strictly to the proxy host. Developer session cookies from other localhost services are not forwarded.
-2. **Proxy Header Stripping:** Inbound headers such as `X-Forwarded-Server` or internal routing headers are sanitized to avoid confusing framework middleware.
-3. **Error Redaction:** If the upstream dev server crashes or is stopped while DevMirror is running, DevMirror returns a clean, sanitized error page (`502 Bad Gateway: Upstream Target Disconnected`) rather than dumping Node.js stack traces or file system paths.
-
----
-
-### 3.6 Chrome Extension Manifest V3 Security
-
-The DevMirror Chrome Extension adheres to the Principle of Least Privilege:
-
-- **Manifest V3 Compliant:** No remote code execution or `unsafe-eval` allowed. All scripts are bundled at build time.
-- **Minimal Permissions:**
-  ```json
-  {
-    "manifest_version": 3,
-    "name": "DevMirror Companion",
-    "permissions": [
-      "activeTab",
-      "storage"
-    ],
-    "host_permissions": [
-      "http://localhost/*",
-      "http://127.0.0.1/*"
-    ]
-  }
-  ```
-- **Permission Justification:**
-  - `activeTab`: Used exclusively to detect whether the user is viewing `localhost:<port>` in their active browser tab.
-  - `host_permissions`: Strictly restricted to loopback addresses (`localhost` and `127.0.0.1`). The extension cannot interact with or read any external website or user browsing history.
+1. **CORS Preflight Blocking:**
+   - In Fastify's wildcard `OPTIONS` handler, any preflight request requesting a mutating HTTP method (`POST`, `DELETE`, `PUT`, `PATCH`) from a web origin (`http://localhost:*` or `http://127.0.0.1:*`) is immediately terminated with **`403 Forbidden`**.
+2. **Strict Origin Separation on Mutating Requests:**
+   - Browser requests (`Origin` header present and not `null`) are only permitted if they originate from the verified Chrome Extension (`chrome-extension://kmcaoghdokfdbadplofpkeabloldmoga`).
+   - Trusted extension requests must also present the `x-devmirror-csrf: 1` header.
+   - Non-browser CLI requests (no `Origin` header) must present `x-devmirror-cli: 1` or an authorization token. A generic CSRF header alone is rejected.
+3. **Sensitive Endpoint Protection:**
+   - `GET /api/v1/session/pairing-url`: Returns the pairing URL only to the verified extension or authenticated CLI. Web origins are rejected with `403 Forbidden`.
+   - `GET /api/v1/discover`: Port scanning results are restricted to the verified extension or authenticated CLI. Web origins are rejected with `403 Forbidden`.
+   - `GET /api/v1/devices`: Connected device details are restricted to the verified extension or authenticated CLI. Web origins are rejected with `403 Forbidden`.
 
 ---
 
-### 3.7 DoS & Resource Exhaustion Protection
+### 3.5 SSRF & Cloud Metadata Protections
 
-- **Rate Limiting:** Fastify proxy incorporates a sliding-window rate limiter (default: 300 requests/second per IP) to prevent rogue scripts or scanning tools on the LAN from saturating CPU or network bandwidth.
-- **WebSocket Connection Cap:** At most 10 concurrent WebSocket connections are allowed per active session.
-- **Request Size Limiting:** HTTP request body size is capped at 50MB (accommodating file uploads during testing) to avoid heap memory exhaustion.
+The dev server scanner (`@devmirror/scanner`) probes ports on the local machine. To prevent Server-Side Request Forgery (SSRF) and DNS rebinding attacks:
+- Destination hosts are strictly validated using `isAllowedHost()`.
+- Loopback addresses (`127.0.0.1`, `::1`, `localhost`) and private RFC 1918 IPv4 addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) are permitted.
+- Cloud metadata endpoints (e.g. `169.254.169.254`, AWS, GCP, Azure, OpenStack instance metadata) are strictly blocked across all IPv4 and IPv6 notations.
+- Public internet IP addresses and external domain names are rejected.
+- Redirects during HTTP probing are capped (maximum 3 redirects) and each redirect destination is re-validated before opening a connection.
+
+---
+
+### 3.6 Safe System & Process Execution
+
+When inspecting listening processes on Windows (`netstat`, `tasklist`) and POSIX (`lsof`, `ss`, `ps`):
+- All invocations strictly use `execFile` with typed argument arrays.
+- Shell interpolation is prohibited (`shell: false`).
+- Port arguments are validated as integer values between 1 and 65535.
+- PID arguments are validated as positive integer values between 1 and 4,194,304.
+- All commands enforce strict execution timeouts (default: 1000ms) to prevent hanging or blocking the CLI.
+
+---
+
+### 3.7 Zero Telemetry & Privacy Guarantee
+
+DevMirror is 100% self-contained:
+- Zero telemetry, usage beacons, or analytics collection.
+- Zero external cloud relays or tunnel servers.
+- All network communication occurs exclusively over the local machine's loopback and local Wi-Fi interfaces.
+- Session tokens are ephemeral, stored exclusively in volatile memory, and wiped upon process exit.

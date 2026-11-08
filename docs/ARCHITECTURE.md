@@ -1,341 +1,214 @@
-# DevMirror: Architecture & Monorepo Specification
+# DevMirror Architecture & System Specification
 
-**Document Status:** Approved Architecture Plan  
-**Target Version:** v0.1.0 – v1.0.0  
-**Author:** DevMirror Architecture & Developer Tools Engineering Team  
+**Document Version:** 1.0.0 (Production Release)  
+**Status:** Approved Architecture Implementation  
+**Monorepo Path:** `D:\code\DevMirror`  
 
 ---
 
-## 1. Monorepo Structure & Package Hierarchy
+## 1. Monorepo Package Topology
 
-DevMirror is organized as a high-performance `pnpm` workspace monorepo. It enforces strict separation of concerns between core proxy primitives, detection engines, injected client runtimes, the CLI application, and the Chrome Extension.
+DevMirror is organized as a high-performance `pnpm` workspace with strict package boundaries:
 
-```
+```text
 devmirror/
-├── package.json                   # Root package.json (pnpm workspaces, turbo scripts)
-├── pnpm-workspace.yaml            # Workspace package declarations
-├── tsconfig.base.json             # Shared strict TypeScript configuration
-├── vitest.workspace.ts            # Monorepo-wide Vitest test configuration
-├── .gitignore
-├── .editorconfig
-├── docs/                          # Architecture, security & research documentation
-│   ├── RESEARCH.md
-│   ├── SYSTEM_DESIGN.md
-│   ├── ARCHITECTURE.md
-│   ├── SECURITY.md
-│   └── IMPLEMENTATION_ROADMAP.md
-│
+├── packages/
+│   ├── shared/                # @devmirror/shared: Protocol constants, types, schemas, token utilities
+│   ├── core/                  # @devmirror/core: LAN proxy, HMR adapters, rewriter, session manager, Control API
+│   ├── scanner/               # @devmirror/scanner: TCP prober, OS process inspector, framework fingerprinting
+│   └── cli/                   # @devmirror/cli: CLI binary, ANSI QR generator, server selector, runner
 ├── apps/
-│   ├── cli/                       # DevMirror Terminal CLI & Agent Daemon
-│   │   ├── src/
-│   │   │   ├── commands/          # "start", "status", "scan", "tunnel"
-│   │   │   ├── ui/                # Terminal UI (Ink / Chalk / ANSI QR display)
-│   │   │   ├── index.ts           # CLI entry point (Commander.js)
-│   │   │   └── server.ts          # Agent bootstrap combining proxy & control API
-│   │   ├── package.json
-│   │   ├── tsconfig.json
-│   │   └── vite.config.ts         # Bundler config for single binary/dist build
-│   │
-│   └── extension/                 # Chrome Extension (Manifest V3)
-│       ├── manifest.json          # MV3 configuration
-│       ├── src/
-│       │   ├── background/        # Service worker (active tab scanner, local IPC)
-│       │   ├── popup/             # React + Tailwind popup UI (QR canvas, controls)
-│       │   └── content/           # Content script (optional devtools hook)
-│       ├── package.json
-│       ├── tsconfig.json
-│       ├── vite.config.ts         # Extension bundler (CRX / Vite plugin)
-│       └── tailwind.config.js
-│
-└── packages/
-    ├── core/                      # Core Reverse Proxy, Session & HMR Engine
-    │   ├── src/
-    │   │   ├── proxy/             # Fastify HTTP & WebSocket reverse proxy
-    │   │   ├── hmr/               # Framework adapters (Vite, Next, Angular)
-    │   │   ├── injection/         # HTML parser & companion HUD injection stream
-    │   │   ├── session/           # Cryptographic token generator & validator
-    │   │   ├── network/           # LAN IPv4 interface resolver & diagnostics
-    │   │   └── index.ts
-    │   ├── package.json
-    │   └── tsconfig.json
-    │
-    ├── scanner/                   # Port, Process & Framework Detection Engine
-    │   ├── src/
-    │   │   ├── ports/             # Concurrent TCP socket prober
-    │   │   ├── process/           # OS process table inspection (PID & CWD)
-    │   │   ├── fingerprint/       # HTTP signature analyzer (Vite/Next/Vue/Angular)
-    │   │   └── index.ts
-    │   ├── package.json
-    │   └── tsconfig.json
-    │
-    ├── client-overlay/            # Zero-dependency Mobile Companion HUD
-    │   ├── src/
-    │   │   ├── hud.ts             # Floating collapsible UI widget
-    │   │   ├── console.ts         # Console interceptor (log/warn/error HUD)
-    │   │   ├── hmr-shim.ts        # Client-side WebSocket URL resolver
-    │   │   └── index.ts
-    │   ├── package.json           # Builds to standalone lightweight dist/companion.min.js (<12KB)
-    │   ├── tsconfig.json
-    │   └── vite.config.ts
-    │
-    └── shared/                    # Shared Types, Schemas & Protocol Constants
-        ├── src/
-        │   ├── types/             # Session, Config, Target, Device types
-        │   ├── constants/         # Default ports (4000, 4100), paths, headers
-        │   ├── ipc/               # Control API REST schemas & WS message types
-        │   └── index.ts
-        ├── package.json
-        └── tsconfig.json
+│   └── extension/             # @devmirror/extension: Chrome Extension (Manifest V3) popup dashboard
+└── docs/                      # Technical specifications, threat models, research notes
 ```
 
----
-
-## 2. Monorepo Dependency Graph
+### Package Dependency Graph
 
 ```mermaid
 graph TD
     shared["@devmirror/shared"]
-    clientOverlay["@devmirror/client-overlay"]
     scanner["@devmirror/scanner"]
     core["@devmirror/core"]
-    cli["@devmirror/cli (apps/cli)"]
-    extension["@devmirror/extension (apps/extension)"]
+    cli["@devmirror/cli"]
+    extension["@devmirror/extension"]
 
-    core --> shared
-    core --> clientOverlay
     scanner --> shared
-    cli --> core
-    cli --> scanner
+    core --> shared
     cli --> shared
+    cli --> scanner
+    cli --> core
     extension --> shared
 ```
 
-- **Zero Circular Dependencies:** Strict leaf-to-root hierarchy.
-- **`@devmirror/shared`:** Contains TypeScript interfaces, message schemas, and protocol constants. Has no runtime dependencies.
-- **`@devmirror/client-overlay`:** Built as a standalone pre-bundled asset (`companion.min.js`) embedded into `@devmirror/core` at build time so the proxy can serve it without external file system lookups.
-
 ---
 
-## 3. Core Module Responsibilities & TypeScript Interfaces
+## 2. Dual-Port Network Topology
 
-### 3.1 `@devmirror/shared`: Protocol & Domain Types
-
-```typescript
-// packages/shared/src/types/index.ts
-
-export type SupportedFramework = 'vite' | 'nextjs' | 'angular' | 'vanilla' | 'unknown';
-
-export interface TargetDevServer {
-  host: string;            // e.g. "127.0.0.1"
-  port: number;            // e.g. 5173
-  framework: SupportedFramework;
-  pid?: number;
-  cwd?: string;
-  command?: string;
-  isHttps: boolean;
-}
-
-export interface SessionInfo {
-  sessionId: string;
-  token: string;
-  createdAt: number;
-  expiresAt: number;
-  target: TargetDevServer;
-  lanIp: string;
-  proxyPort: number;
-  mobileUrl: string;       // e.g. "http://192.168.1.45:4000/?dm_token=..."
-  connectedClients: ConnectedClient[];
-}
-
-export interface ConnectedClient {
-  id: string;
-  ip: string;
-  userAgent: string;
-  deviceType: 'ios' | 'android' | 'desktop' | 'unknown';
-  connectedAt: number;
-  lastPingAt: number;
-}
-
-export interface ControlApiMessage<T = unknown> {
-  type: 'TARGET_CHANGED' | 'CLIENT_CONNECTED' | 'CLIENT_DISCONNECTED' | 'ERROR' | 'LOG';
-  payload: T;
-  timestamp: number;
-}
-```
-
-### 3.2 `@devmirror/scanner`: Detection Engine
-
-```typescript
-// packages/scanner/src/index.ts
-
-export interface IPortScanner {
-  scanCommonPorts(customPorts?: number[]): Promise<number[]>;
-  isPortListening(port: number, host?: string): Promise<boolean>;
-}
-
-export interface IProcessInspector {
-  findDevServersInCwd(cwd: string): Promise<TargetDevServer[]>;
-  findProcessByPort(port: number): Promise<{ pid: number; command: string } | null>;
-}
-
-export interface IFingerprinter {
-  identifyFramework(host: string, port: number): Promise<{
-    framework: SupportedFramework;
-    isHttps: boolean;
-    title?: string;
-  }>;
-}
-
-export interface IDetectorEngine {
-  detectActiveDevServer(options?: {
-    preferredPort?: number;
-    cwd?: string;
-  }): Promise<TargetDevServer | null>;
-}
-```
-
-### 3.3 `@devmirror/core`: Proxy & Session Engine
-
-```typescript
-// packages/core/src/proxy/index.ts
-
-import type { TargetDevServer, SessionInfo } from '@devmirror/shared';
-
-export interface ProxyOptions {
-  lanIp: string;
-  proxyPort: number;
-  controlPort: number;
-  target: TargetDevServer;
-  sessionManager: ISessionManager;
-  enableOverlay?: boolean;
-}
-
-export interface IProxyEngine {
-  start(): Promise<{ proxyUrl: string; controlUrl: string }>;
-  stop(): Promise<void>;
-  updateTarget(newTarget: TargetDevServer): void;
-  getActiveSession(): SessionInfo;
-}
-
-export interface ISessionManager {
-  createSession(target: TargetDevServer, lanIp: string, proxyPort: number): SessionInfo;
-  validateToken(token: string): boolean;
-  validateCookie(cookie: string): boolean;
-  registerClient(ip: string, userAgent: string): string;
-  removeClient(clientId: string): void;
-  revokeAllSessions(): void;
-}
-
-export interface IHmrAdapter {
-  framework: SupportedFramework;
-  rewriteHeaders(headers: Record<string, string | string[] | undefined>, target: TargetDevServer): Record<string, string>;
-  shouldInterceptWebSocket(urlPath: string): boolean;
-  transformHtmlResponse(html: string, session: SessionInfo): string;
-}
-```
-
----
-
-## 4. Extensibility Design: Future Remote Tunnel Adapter
-
-DevMirror is built with a pluggable transport architecture. While initial releases prioritize zero-latency local Wi-Fi connectivity, the proxy layer is fully decoupled from the network transport via the `ITunnelProvider` interface:
+DevMirror enforces strict interface segregation by separating the public LAN interface from the local control interface:
 
 ```
 +-----------------------------------------------------------------------------------+
-|                        PLUGGABLE TRANSPORT ARCHITECTURE                           |
+|                         NETWORK INTERFACE SEGREGATION                             |
 +-----------------------------------------------------------------------------------+
-                                Fastify Proxy Core
+
+     [ External LAN Interface ]                    [ Local Loopback Interface ]
+        (e.g. 192.168.1.45)                                (127.0.0.1)
+                 |                                              |
+                 v                                              v
+   +------------------------------+               +------------------------------+
+   |   LAN Reverse Proxy Server   |               |   Local Fastify Control API  |
+   |   Default: 0.0.0.0:4000      |               |   Default: 127.0.0.1:4100    |
+   +------------------------------+               +------------------------------+
+   | - Ephemeral token auth gate  |               | - Strictly bound to loopback |
+   | - Upstream cookie stripping  |               | - Web origins forbidden      |
+   | - HTML & HMR path rewriting  |               | - Extension & CLI IPC only   |
+   | - Compression handling       |               | - Preflight mutating block   |
+   +------------------------------+               +------------------------------+
+                 |                                              |
+                 +----------------------+-----------------------+
                                         |
-                 +----------------------+----------------------+
-                 |                                             |
-                 v                                             v
-     +-----------------------+                     +-----------------------+
-     |   LocalLANTransport   |                     |   ITunnelProvider     |
-     |  (Default Wi-Fi LAN)  |                     |   (Remote Fallback)   |
-     |  - Direct TCP/HTTP    |                     |   - Cloudflare Tunnel |
-     |  - Sub-3ms latency    |                     |   - WebRTC P2P Data   |
-     |  - Bound to 0.0.0.0   |                     |   - Custom Relay      |
-     +-----------------------+                     +-----------------------+
+                                        v
+                         +-----------------------------+
+                         |   Local Development Server  |
+                         |   (e.g., 127.0.0.1:5173)    |
+                         |   Vite / Next / Angular     |
+                         +-----------------------------+
 ```
 
-### 4.1 `ITunnelProvider` Specification
+### 1. LAN Reverse Proxy (`0.0.0.0:4000`)
+- **Binding:** Binds to `0.0.0.0` on the allocated proxy port (default: 4000, with automatic fallback up to 4100).
+- **Authentication Gate:** Every incoming HTTP request and WebSocket upgrade must present either a valid `?dm_token=<token>` query parameter or a verified `__devmirror_session=<token>` cookie. Unauthenticated requests receive `401 Unauthorized`.
+- **Address Bar Token Stripping:** Upon first authentication via query parameter, the server issues a `Set-Cookie: __devmirror_session=<token>; HttpOnly; SameSite=Lax` header and redirects to the clean URL, stripping the secret token from the browser address bar.
+- **Upstream Cookie Isolation:** Before forwarding HTTP or WebSocket upgrade requests to the local dev server, the proxy strips the internal `__devmirror_session` cookie to prevent token leakage to application code.
+- **HTML Streaming Rewriter:** Modifies HTML on the fly to rewrite framework HMR scripts and connection coordinates to point to the LAN proxy.
 
-```typescript
-// packages/core/src/tunnel/types.ts
-
-export interface TunnelEndpoint {
-  id: string;
-  publicUrl: string;       // e.g. "https://dm-tunnel-xyz.devmirror.dev"
-  secureToken: string;
-  isP2P: boolean;          // true if WebRTC peer-to-peer data channel
-  latencyMs?: number;
-}
-
-export interface ITunnelProvider {
-  readonly name: string;
-  readonly isAvailable: boolean;
-
-  /**
-   * Connects local Fastify proxy port to remote tunnel endpoint.
-   */
-  openTunnel(localPort: number): Promise<TunnelEndpoint>;
-
-  /**
-   * Closes the active remote tunnel.
-   */
-  closeTunnel(): Promise<void>;
-
-  /**
-   * Event emitter for tunnel connection lifecycle.
-   */
-  onStatusChange(callback: (status: 'connecting' | 'connected' | 'disconnected' | 'error') => void): void;
-}
-```
-
-This design guarantees that when Cloudflare Tunnel, WebRTC, or Tailscale support is introduced, **zero changes** are required to the HMR adapters, Fastify proxy core, or Chrome Extension.
+### 2. Local Control API (`127.0.0.1:4100`)
+- **Binding:** Strictly bound to `127.0.0.1` (loopback only). Rejects external LAN connections at the TCP listener level.
+- **Strict Origin Allowlist:** Verifies the `Origin` header using URL parsing. Rejects web origins (`http://localhost:*` or `http://127.0.0.1:*`) from mutating state (`POST`, `DELETE`, `PUT`, `PATCH`) and sensitive endpoints (`/api/v1/session/pairing-url`, `/api/v1/discover`, `/api/v1/devices`).
+- **CORS Preflight Blocking:** In the wildcard `OPTIONS` handler, preflights for mutating methods from non-extension origins are terminated immediately with `403 Forbidden`.
+- **Authorized Clients:**
+  - **Chrome Extension:** Verified against the exact deterministic extension origin `chrome-extension://kmcaoghdokfdbadplofpkeabloldmoga` and must pass `x-devmirror-csrf: 1`.
+  - **Terminal CLI:** Non-browser requests without an Origin header must explicitly pass `x-devmirror-cli: 1` or an auth token.
 
 ---
 
-## 5. Control API & Chrome Extension IPC Specification
+## 3. End-to-End Sequence Diagrams
 
-The Local Agent exposes a lightweight REST and WebSocket IPC server on `http://127.0.0.1:4100` strictly bound to the loopback interface.
+### 3.1 CLI Startup & Server Discovery Flow
 
-| Endpoint | Method | Description | Request / Response Payload |
-| :--- | :--- | :--- | :--- |
-| `/api/health` | `GET` | Healthcheck and agent running status | `{ "status": "ok", "version": "0.1.0" }` |
-| `/api/session` | `GET` | Returns active session, target, and QR data | `SessionInfo` JSON |
-| `/api/target` | `POST` | Updates proxy target port (e.g. from Extension tab) | `{ "port": 3000, "framework": "nextjs" }` -> `SessionInfo` |
-| `/api/session/revoke` | `POST` | Revokes current tokens and disconnects clients | `{ "revoked": true }` |
-| `/api/clients` | `GET` | Returns list of currently connected mobile devices | `ConnectedClient[]` |
-| `/api/events` | `WS` | Real-time bidirectional event feed for Chrome Extension | Stream of `ControlApiMessage` |
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Dev as Developer
+    participant CLI as @devmirror/cli
+    participant Scanner as @devmirror/scanner
+    participant Core as @devmirror/core Engine
+    participant Proxy as LAN Proxy (:4000)
+    participant Control as Control API (:4100)
+
+    Dev->>CLI: npx devmirror
+    CLI->>Scanner: scan()
+    Scanner->>Scanner: Probe TCP ports (3000, 5173, etc.)
+    Scanner->>Scanner: Inspect process (netstat/tasklist or lsof/ss)
+    Scanner->>Scanner: Fingerprint HTTP signatures
+    Scanner-->>CLI: Discovered servers list
+    Dev->>CLI: Selects server (e.g. Vite on :5173)
+    CLI->>Core: start({ target, ports })
+    Core->>Core: Resolve LAN IP (e.g. 192.168.1.45)
+    Core->>Control: start() on 127.0.0.1:4100
+    Core->>Proxy: start() on 0.0.0.0:4000
+    Core->>Core: Generate 256-bit session token
+    Core-->>CLI: { proxyPort, controlPort, lanIp, session }
+    CLI->>CLI: Generate ANSI QR code
+    CLI-->>Dev: Print Dashboard & QR in Terminal
+```
+
+### 3.2 Mobile Pairing & Authentication Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Mobile as Mobile Browser
+    participant Proxy as LAN Proxy (:4000)
+    participant DevServer as Local Dev Server (:5173)
+
+    Mobile->>Proxy: GET /?dm_token=XYZ (Camera Scan)
+    Proxy->>Proxy: Validate token (timingSafeEqual)
+    Proxy-->>Mobile: 302 Found (Set-Cookie: __devmirror_session=XYZ; Location: /)
+    Note over Mobile: Address bar cleaned: token removed from URL!
+    Mobile->>Proxy: GET / (Cookie: __devmirror_session=XYZ; appCookie=123)
+    Proxy->>Proxy: Validate session cookie
+    Proxy->>Proxy: Strip __devmirror_session from headers
+    Proxy->>DevServer: Forward GET / (Cookie: appCookie=123)
+    DevServer-->>Proxy: 200 OK (HTML Payload)
+    Proxy->>Proxy: Rewrite HTML & inject HMR client configs
+    Proxy-->>Mobile: 200 OK (Transformed HTML)
+```
+
+### 3.3 WebSocket HMR Proxying Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant MobileClient as Mobile HMR Runtime
+    participant Proxy as LAN Proxy (:4000)
+    participant DevServer as Local Dev Server (:5173)
+
+    MobileClient->>Proxy: WS Upgrade /@vite-hmr (Cookie: __devmirror_session=XYZ)
+    Proxy->>Proxy: Authenticate session cookie
+    Proxy->>Proxy: Strip __devmirror_session from upgrade headers
+    Proxy->>Proxy: Rewrite Host & Origin to 127.0.0.1:5173
+    Proxy->>DevServer: Upstream WS Upgrade
+    DevServer-->>Proxy: 101 Switching Protocols
+    Proxy-->>MobileClient: 101 Switching Protocols
+    Proxy->>Proxy: Track active duplex sockets
+    loop Bidirectional HMR
+        DevServer->>Proxy: WS Frame: update { file: 'App.tsx' }
+        Proxy->>MobileClient: WS Frame: update { file: 'App.tsx' }
+    end
+    Note over Proxy: Sockets destroyed immediately on engine stop or target switch
+```
 
 ---
 
-## 6. Testing & Quality Assurance Strategy
+## 4. Cross-Platform Process Inspection Architecture
 
-To ensure rock-solid stability across varying operating systems (Windows, macOS, Linux) and target bundlers, DevMirror employs a multi-tiered testing pipeline using **Vitest**:
+The `@devmirror/scanner` package identifies which local processes own listening ports using native OS tools without executing shell scripts:
 
 ```
 +-----------------------------------------------------------------------------------+
-|                            TESTING PYRAMID & SUITE                                |
+|                        PROCESS INSPECTOR FACTORY                                  |
 +-----------------------------------------------------------------------------------+
-|  E2E Bundler Integration  |  Real Vite/Next.js fixture servers + Playwright Mobile|
-|  Duplex Proxy Streaming   |  Vitest HTTP & WS streaming benchmarks (<5ms overhead)|
-|  Scanner & Fingerprinting |  Port probe, process match & signature tests          |
-|  Unit Tests               |  Header rewriting, HTML injection, session crypto    |
-+-----------------------------------------------------------------------------------+
+                                      |
+                     [ os.platform() === 'win32'? ]
+                                      |
+                    +-----------------+-----------------+
+                    |                                   |
+                 ( Yes )                             ( No )
+                    v                                   v
+    +-------------------------------+   +-------------------------------+
+    |    WindowsProcessInspector    |   |     PosixProcessInspector     |
+    +-------------------------------+   +-------------------------------+
+    | - netstat.exe -ano -p tcp     |   | 1. Try lsof -n -P -iTCP:<p>   |
+    | - tasklist.exe /fi PID eq ... |   | 2. Fallback to ss -tlpn       |
+    | - Strict PID numeric checks   |   | 3. Resolve name via ps comm=  |
+    | - windowsHide: true           |   | - Argument arrays, timeouts   |
+    +-------------------------------+   +-------------------------------+
 ```
 
-### 6.1 Unit Test Coverage (`packages/core`, `packages/scanner`, `packages/shared`)
-- **Crypto & Session:** 100% test coverage for token generation, CSPRNG entropy, constant-time token comparison, and cookie parsing.
-- **Header Transformations:** Test matrix for Host, Origin, Referer, X-Forwarded headers across edge cases (IPv6, custom hostnames, trailing slashes).
-- **HTML Rewriter Stream:** Test stream chunking, partial `<head>` tag splits across buffers, and decompression handling (gzip/brotli).
+---
 
-### 6.2 Bundler Integration Test Harness
-The repo includes a dedicated `test/fixtures` directory with lightweight, headless sample apps:
-- `fixtures/vite-react`: Basic Vite 5/6 React application.
-- `fixtures/nextjs-app`: Minimal Next.js 14 App Router project.
-- `fixtures/angular-app`: Minimal Angular 17 Vite-based project.
-- `fixtures/vanilla-html`: Static HTML/CSS project.
+## 5. Session Lifecycle & Target Switching
 
-Integration tests launch the fixture on an ephemeral port, start DevMirror proxy, simulate an incoming mobile HTTP request and WebSocket handshake, simulate a file change on disk, and assert that the HMR update payload is received on the mock mobile WebSocket client within 100ms.
+- **Single Active Session Model:** The engine enforces a single active session at any given time.
+- **Dynamic Target Switching:** When a developer switches targets (via CLI or Chrome Extension `POST /api/v1/session`):
+  1. The target dev server coordinates are updated.
+  2. All existing client sockets and upstream WebSocket tunnels are cleanly closed.
+  3. The HTML rewriter reconfigures its framework adapter for the new target.
+  4. The pairing token remains valid or can be revoked via `DELETE /api/v1/session`.
+- **Graceful Teardown:** Upon `SIGINT`/`SIGTERM` or pressing `q`:
+  - Active sockets are destroyed immediately.
+  - LAN proxy server closes all keep-alive connections (`server.closeAllConnections()`).
+  - Fastify Control API closes gracefully (`app.close()`).
+  - Port allocations are freed in `PortManager`.
+  - TTY input streams are paused and restored.
