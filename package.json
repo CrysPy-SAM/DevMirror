@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "description": "Zero-config mobile browser preview with preserved HMR for local web development",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CrysPy-SAM/DevMirror.git"
+  },
   "packageManager": "pnpm@10.15.0",
   "bin": {
     "devmirror": "./packages/cli/bin/devmirror.js"

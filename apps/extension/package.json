@@ -3,13 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "description": "Chrome Extension for DevMirror - Browser popup dashboard and QR preview controller",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CrysPy-SAM/DevMirror.git",
+    "directory": "apps/extension"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "clean": "node -e \"try { require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('tsconfig.tsbuildinfo', { force: true }); } catch {}\""
+    "clean": "node -e \"try { require('fs').rmSync('dist', { recursive: true, force: true }); require('fs').rmSync('tsconfig.tsbuildinfo', { force: true }); } catch {}\"",
+    "package": "node scripts/package.js"
   },
   "dependencies": {
     "@devmirror/shared": "workspace:*",

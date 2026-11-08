@@ -6,3 +6,8 @@ coverage/
 .DS_Store
 Thumbs.db
 *.tsbuildinfo
+*.zip
+*.tgz
+.env
+.env.*
+*.local
