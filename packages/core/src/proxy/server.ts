@@ -97,6 +97,25 @@ export class LanProxyServer {
   }
 
   /**
+   * Strips only the DevMirror session cookie (__devmirror_session) from the Cookie header,
+   * preserving all target application cookies.
+   */
+  public static stripSessionCookie(cookieHeader: string | undefined): string | undefined {
+    if (!cookieHeader) return undefined;
+
+    const remainingCookies = cookieHeader
+      .split(';')
+      .map((c) => c.trim())
+      .filter((c) => {
+        if (!c) return false;
+        const cookieName = c.split('=')[0].trim();
+        return cookieName !== SESSION_COOKIE_NAME;
+      });
+
+    return remainingCookies.length > 0 ? remainingCookies.join('; ') : undefined;
+  }
+
+  /**
    * Parses cookies from raw Cookie header string.
    */
   private parseCookies(cookieHeader: string | undefined): Record<string, string> {
@@ -204,6 +223,14 @@ export class LanProxyServer {
     forwardedHeaders['x-forwarded-for'] = req.socket.remoteAddress || '127.0.0.1';
     forwardedHeaders['x-forwarded-host'] = req.headers.host || `${this.host}:${this.port}`;
     forwardedHeaders['x-forwarded-proto'] = 'http';
+
+    // Strip DevMirror session cookie so pairing token is never forwarded to target dev server
+    const sanitizedCookie = LanProxyServer.stripSessionCookie(req.headers.cookie);
+    if (sanitizedCookie) {
+      forwardedHeaders.cookie = sanitizedCookie;
+    } else {
+      delete forwardedHeaders.cookie;
+    }
 
     // Strip pairing token from path so it is never forwarded to target dev server
     const sanitizedPath = this.stripTokenFromPath(req.url || '/');
@@ -362,6 +389,14 @@ export class LanProxyServer {
       } catch {
         delete forwardedHeaders.referer;
       }
+    }
+
+    // Strip DevMirror session cookie so pairing token is never forwarded to target dev server
+    const sanitizedCookie = LanProxyServer.stripSessionCookie(req.headers.cookie);
+    if (sanitizedCookie) {
+      forwardedHeaders.cookie = sanitizedCookie;
+    } else {
+      delete forwardedHeaders.cookie;
     }
 
     forwardedHeaders['connection'] = 'Upgrade';
