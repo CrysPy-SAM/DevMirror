@@ -65,11 +65,15 @@ You can invoke the CLI binary directly against a local project:
 # Build packages first
 pnpm run build
 
-# Run CLI against an auto-discovered dev server
-node packages/cli/bin/devmirror.js
+# Run the CLI using the workspace shortcut (recommended)
+pnpm run devmirror
 
-# Or specify a target port directly
+# Or execute the Node binary directly with custom options
 node packages/cli/bin/devmirror.js --port 5173
+
+# Note: "pnpm run dev" starts TypeScript compilation in watch mode (tsc --watch)
+# for modifying CLI code, rather than running the application itself.
+pnpm run dev
 ```
 
 ### Loading the Chrome Extension in Developer Mode
