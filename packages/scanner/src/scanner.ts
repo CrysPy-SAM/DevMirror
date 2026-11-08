@@ -3,7 +3,11 @@
  * Discovers and validates local development servers across common ports with framework fingerprinting.
  */
 
-import { COMMON_DEV_PORTS, type DiscoveredDevServer } from '@devmirror/shared';
+import {
+  COMMON_DEV_PORTS,
+  type DiscoveredDevServer,
+  type DetectionConfidence
+} from '@devmirror/shared';
 import type { ScanOptions, ValidateOptions } from './types.js';
 import { PortProber } from './prober/port-prober.js';
 import { FrameworkDetector } from './fingerprint/detector.js';
@@ -105,7 +109,11 @@ export class DevServerScanner {
     }
 
     // Sort by confidence ('high' > 'medium' > 'low'), then by port ascending
-    const confidenceOrder = { high: 3, medium: 2, low: 1 };
+    const confidenceOrder: Record<DetectionConfidence, number> = {
+      high: 3,
+      medium: 2,
+      low: 1
+    };
     discoveredServers.sort((a, b) => {
       const confDiff = confidenceOrder[b.confidence] - confidenceOrder[a.confidence];
       if (confDiff !== 0) return confDiff;

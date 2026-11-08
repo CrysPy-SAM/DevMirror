@@ -38,11 +38,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Workspace typecheck
-        run: pnpm run typecheck
-
       - name: Build all packages
         run: pnpm run build
+
+      - name: Workspace typecheck
+        run: pnpm run typecheck
 
       - name: Run test suite
         run: pnpm test
@@ -56,3 +56,10 @@ jobs:
           test -f apps/extension/dist/devmirror-extension-webstore-v0.1.0.zip || exit 1
           test -f apps/extension/dist/devmirror-extension-unpacked-v0.1.0.zip || exit 1
           echo "Extension ZIP packages successfully verified."
+
+      - name: Verify Package Tarballs
+        run: |
+          npm pack --dry-run ./packages/cli
+          npm pack --dry-run ./packages/core
+          npm pack --dry-run ./packages/scanner
+          npm pack --dry-run ./packages/shared

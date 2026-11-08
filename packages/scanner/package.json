@@ -1,7 +1,6 @@
 {
   "name": "@devmirror/scanner",
   "version": "0.1.0",
-  "private": true,
   "description": "Port scanning, process inspection, and framework fingerprinting for local dev servers",
   "license": "MIT",
   "repository": {

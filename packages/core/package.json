@@ -1,7 +1,6 @@
 {
   "name": "@devmirror/core",
   "version": "0.1.0",
-  "private": true,
   "description": "Core reverse proxy, session management, and local control engine for DevMirror",
   "license": "MIT",
   "repository": {
