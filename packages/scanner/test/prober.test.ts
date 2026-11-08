@@ -313,4 +313,80 @@ describe('PortProber', () => {
       expect(openProbe?.isOpen).toBe(true);
     });
   });
+
+  describe('Dual-stack IPv4/IPv6 and localhost probing (Task 1)', () => {
+    it('should safely handle safeLookup with options.all = true without TypeError', async () => {
+      const isLoopback = PortProber.isLoopbackHost('localhost');
+      expect(isLoopback).toBe(true);
+      expect(PortProber.isLoopbackHost('127.0.0.1')).toBe(true);
+      expect(PortProber.isLoopbackHost('::1')).toBe(true);
+      expect(PortProber.isLoopbackHost('[::1]')).toBe(true);
+
+      const openOnLocalhost = await prober.isPortOpen('localhost', testPort, 500);
+      expect(openOnLocalhost).toBe(true);
+
+      const probeLocalhost = await prober.probePort('localhost', testPort, 500);
+      expect(probeLocalhost.isOpen).toBe(true);
+      expect(probeLocalhost.isHttp).toBe(true);
+      expect(probeLocalhost.statusCode).toBe(200);
+    });
+
+    it('should probe IPv6-only server and fall back when scanning 127.0.0.1', async () => {
+      const ipv6Server = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<h1>IPv6 Only Server</h1>');
+      });
+
+      let ipv6Port: number | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          ipv6Server.listen(0, '::1', () => {
+            ipv6Port = (ipv6Server.address() as any).port;
+            resolve();
+          });
+          ipv6Server.on('error', (err) => reject(err));
+        });
+      } catch {
+        // If IPv6 is not supported by environment, skip gracefully
+        return;
+      }
+
+      if (ipv6Port) {
+        // 1. Direct probe on ::1
+        const directProbe = await prober.probePort('::1', ipv6Port, 500);
+        expect(directProbe.isOpen).toBe(true);
+        expect(directProbe.isHttp).toBe(true);
+        expect(directProbe.bodySnippet).toBe('<h1>IPv6 Only Server</h1>');
+
+        // 2. Dual-stack fallback: Probing 127.0.0.1 discovers the server via loopback fallback
+        const fallbackProbe = await prober.probePort('127.0.0.1', ipv6Port, 500);
+        expect(fallbackProbe.isOpen).toBe(true);
+        expect(fallbackProbe.isHttp).toBe(true);
+        expect(fallbackProbe.host).toBe('::1');
+
+        await new Promise<void>((resolve) => ipv6Server.close(() => resolve()));
+      }
+    });
+
+    it('should detect a dual-stack server exactly once without duplicate results', async () => {
+      const dualServer = http.createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Dual Stack Server');
+      });
+
+      await new Promise<void>((resolve) => {
+        // Listening without host binds to all interfaces / dual-stack on Node
+        dualServer.listen(0, () => resolve());
+      });
+      const dualPort = (dualServer.address() as any).port;
+
+      const results = await prober.scanPorts('127.0.0.1', [dualPort], 500);
+      expect(results.length).toBe(1);
+      expect(results[0].port).toBe(dualPort);
+      expect(results[0].isOpen).toBe(true);
+      expect(results[0].isHttp).toBe(true);
+
+      await new Promise<void>((resolve) => dualServer.close(() => resolve()));
+    });
+  });
 });

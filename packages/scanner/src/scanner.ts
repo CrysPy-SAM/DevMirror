@@ -74,9 +74,15 @@ export class DevServerScanner {
       // Must be open and accepting valid HTTP(S) connections
       if (!res.isOpen || !res.isHttp) continue;
 
+      const effectiveHost = res.host ?? host;
+      const urlHost =
+        effectiveHost.includes(':') && !effectiveHost.startsWith('[')
+          ? `[${effectiveHost}]`
+          : effectiveHost;
+
       const detection = FrameworkDetector.detect(res.headers, res.bodySnippet);
       const isHttps = !!res.isHttps;
-      const url = `http${isHttps ? 's' : ''}://${host}:${res.port}`;
+      const url = `http${isHttps ? 's' : ''}://${urlHost}:${res.port}`;
 
       let processId: number | undefined;
       let processName: string | undefined;
@@ -94,7 +100,7 @@ export class DevServerScanner {
       }
 
       discoveredServers.push({
-        host,
+        host: effectiveHost,
         port: res.port,
         url,
         framework: detection.framework,
@@ -151,9 +157,15 @@ export class DevServerScanner {
       return null;
     }
 
+    const effectiveHost = probe.host ?? host;
+    const urlHost =
+      effectiveHost.includes(':') && !effectiveHost.startsWith('[')
+        ? `[${effectiveHost}]`
+        : effectiveHost;
+
     const detection = FrameworkDetector.detect(probe.headers, probe.bodySnippet);
     const isHttps = !!probe.isHttps;
-    const url = `http${isHttps ? 's' : ''}://${host}:${port}`;
+    const url = `http${isHttps ? 's' : ''}://${urlHost}:${port}`;
 
     let processId: number | undefined;
     let processName: string | undefined;
@@ -171,7 +183,7 @@ export class DevServerScanner {
     }
 
     return {
-      host,
+      host: effectiveHost,
       port,
       url,
       framework: detection.framework,

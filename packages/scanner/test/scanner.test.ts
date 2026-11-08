@@ -212,4 +212,76 @@ describe('DevServerScanner', () => {
 
     await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
   });
+
+  describe('Dual-Stack IPv4 / IPv6 and Localhost Scanning', () => {
+    it('should discover an IPv6-bound server and bracket IPv6 in URL', async () => {
+      const ipv6Vite = http.createServer((_req, res) => {
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          Server: 'vite/5.0.0'
+        });
+        res.end('<html><head><script type="module" src="/@vite/client"></script></head><body>Vite IPv6</body></html>');
+      });
+
+      let ipv6Port: number | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          ipv6Vite.listen(0, '::1', () => {
+            ipv6Port = (ipv6Vite.address() as any).port;
+            resolve();
+          });
+          ipv6Vite.on('error', (err) => reject(err));
+        });
+      } catch {
+        return; // Skip if IPv6 is disabled in environment
+      }
+
+      if (ipv6Port) {
+        const scanner = new DevServerScanner();
+        // Scanning 127.0.0.1 discovers the server via loopback fallback
+        const discovered = await scanner.scan({
+          host: '127.0.0.1',
+          ports: [ipv6Port],
+          includeProcessInfo: false,
+          timeoutMs: 500
+        });
+
+        expect(discovered.length).toBe(1);
+        expect(discovered[0].port).toBe(ipv6Port);
+        expect(discovered[0].framework).toBe('vite');
+        expect(discovered[0].url).toBe(`http://[::1]:${ipv6Port}`);
+
+        await new Promise<void>((resolve) => ipv6Vite.close(() => resolve()));
+      }
+    });
+
+    it('should discover dual-stack servers without duplicate entries', async () => {
+      const dualStack = http.createServer((_req, res) => {
+        res.writeHead(200, {
+          'Content-Type': 'text/html; charset=utf-8',
+          'X-Powered-By': 'Next.js'
+        });
+        res.end('<html><head><script id="__NEXT_DATA__" type="application/json">{}</script></head><body>Next Dual</body></html>');
+      });
+
+      await new Promise<void>((resolve) => {
+        dualStack.listen(0, () => resolve());
+      });
+      const dualPort = (dualStack.address() as any).port;
+
+      const scanner = new DevServerScanner();
+      const discovered = await scanner.scan({
+        host: '127.0.0.1',
+        ports: [dualPort],
+        includeProcessInfo: false,
+        timeoutMs: 500
+      });
+
+      expect(discovered.length).toBe(1);
+      expect(discovered[0].port).toBe(dualPort);
+      expect(discovered[0].framework).toBe('nextjs');
+
+      await new Promise<void>((resolve) => dualStack.close(() => resolve()));
+    });
+  });
 });

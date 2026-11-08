@@ -90,4 +90,5 @@ export interface ProbeResult {
   headers?: Record<string, string>;
   bodySnippet?: string;
   isHttps?: boolean;
+  host?: string;
 }

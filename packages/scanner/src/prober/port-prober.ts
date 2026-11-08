@@ -14,27 +14,47 @@ export const MAX_BODY_SNIPPET_BYTES = 64 * 1024; // Limit to 64KB for safe finge
 
 /**
  * Custom DNS lookup handler enforcing destination IP verification
- * to prevent DNS rebinding attacks.
+ * to prevent DNS rebinding attacks while supporting dual-stack ({ all: true }) lookups.
  */
 export function safeLookup(
   hostname: string,
   options: any,
-  callback: (err: Error | null, address: string, family: number) => void
+  callback?: (err: Error | null, addressOrAddresses: any, family?: number) => void
 ): void {
-  const cb = typeof options === 'function' ? options : callback;
+  const cb = (typeof options === 'function' ? options : callback) as (
+    err: Error | null,
+    addressOrAddresses: any,
+    family?: number
+  ) => void;
   const opts = typeof options === 'object' ? options : {};
 
-  dns.lookup(hostname, opts, (err, address, family) => {
+  dns.lookup(hostname, opts, (err, addressOrAddresses, family) => {
     if (err) {
-      return cb(err, address || '', family || 4);
+      return cb(err, addressOrAddresses, family);
     }
+
+    if (Array.isArray(addressOrAddresses)) {
+      // options.all was true: addressOrAddresses is LookupAddress[]
+      for (const entry of addressOrAddresses) {
+        if (!PortProber.isAllowedIp(entry.address)) {
+          const rebindingErr = new Error(
+            `DNS Rebinding Protection: host "${hostname}" resolved to forbidden address "${entry.address}". Connection blocked.`
+          );
+          return cb(rebindingErr, []);
+        }
+      }
+      return cb(null, addressOrAddresses);
+    }
+
+    // Single address lookup
+    const address = addressOrAddresses as string;
     if (!PortProber.isAllowedIp(address)) {
       const rebindingErr = new Error(
         `DNS Rebinding Protection: host "${hostname}" resolved to forbidden address "${address}". Connection blocked.`
       );
-      return cb(rebindingErr, address, family);
+      return cb(rebindingErr, '', family || 4);
     }
-    cb(null, address, family);
+    return cb(null, address, family);
   });
 }
 
@@ -179,9 +199,23 @@ export class PortProber {
   }
 
   /**
+   * Identifies whether a host represents a local loopback interface across IPv4 and IPv6.
+   */
+  public static isLoopbackHost(host: string): boolean {
+    const clean = host.trim().replace(/^\[|\]$/g, '').toLowerCase();
+    if (clean === 'localhost') return true;
+    if (clean === '::1' || clean === '0:0:0:0:0:0:0:1' || clean === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
+    if (clean.startsWith('127.')) return true;
+    if (clean === '::ffff:127.0.0.1') return true;
+    return false;
+  }
+
+  /**
    * Checks whether a port is open via a fast TCP connect test with DNS rebinding protection.
    */
   public async isPortOpen(host: string, port: number, timeoutMs: number = 350): Promise<boolean> {
+    const cleanHost = host.trim().replace(/^\[|\]$/g, '');
+
     return new Promise((resolve) => {
       const socket = new net.Socket();
       let resolved = false;
@@ -202,7 +236,7 @@ export class PortProber {
       try {
         socket.connect({
           port,
-          host,
+          host: cleanHost,
           lookup: safeLookup
         });
       } catch {
@@ -226,6 +260,7 @@ export class PortProber {
     optionsOrTimeout: number | ProbeHttpOptions = 500,
     isHttpsFallback: boolean = false
   ): Promise<ProbeResult> {
+    const cleanHost = host.trim().replace(/^\[|\]$/g, '');
     const opts: ProbeHttpOptions =
       typeof optionsOrTimeout === 'number'
         ? { timeoutMs: optionsOrTimeout, isHttps: isHttpsFallback }
@@ -247,18 +282,21 @@ export class PortProber {
       const finish = (result: ProbeResult) => {
         if (!resolved) {
           resolved = true;
+          if (!result.host) {
+            result.host = cleanHost;
+          }
           resolve(result);
         }
       };
 
       const timer = setTimeout(() => {
-        finish({ port, isOpen: true, isHttp: false });
+        finish({ port, isOpen: true, isHttp: false, host: cleanHost });
       }, timeoutMs);
 
       try {
         const req = httpModule.request(
           {
-            hostname: host,
+            hostname: cleanHost,
             port,
             path,
             method: 'GET',
@@ -281,7 +319,8 @@ export class PortProber {
             if (isRedirect && location && redirectCount < maxRedirects) {
               let targetUrl: URL;
               try {
-                const currentBase = `${isHttps ? 'https' : 'http'}://${host}:${port}`;
+                const formattedHost = cleanHost.includes(':') ? `[${cleanHost}]` : cleanHost;
+                const currentBase = `${isHttps ? 'https' : 'http'}://${formattedHost}:${port}`;
                 targetUrl = new URL(location, currentBase);
               } catch {
                 targetUrl = null as any;
@@ -426,8 +465,11 @@ export class PortProber {
   }
 
   /**
-   * Probes a single port: verifies host boundary and port boundaries,
-   * performs TCP connect check, then inspects HTTP response.
+   * Probes a single port with dual-stack loopback fallback:
+   * 1. Probes the primary target host.
+   * 2. If the port is closed and the host is a local loopback (IPv4/IPv6/localhost),
+   *    probes the alternate loopback address family (e.g. 127.0.0.1 <-> ::1).
+   * 3. Guarantees that dual-stack servers are detected exactly once without duplicates.
    */
   public async probePort(
     host: string,
@@ -443,16 +485,34 @@ export class PortProber {
       throw new Error(`Forbidden host: ${host}. Scanner only allows loopback and private LAN addresses.`);
     }
 
-    const isOpen = await this.isPortOpen(host, port, timeoutMs);
-    if (!isOpen) {
-      return { port, isOpen: false, isHttp: false };
+    const cleanHost = host.trim().replace(/^\[|\]$/g, '');
+
+    // 1. Probe primary host
+    const isOpen = await this.isPortOpen(cleanHost, port, timeoutMs);
+    if (isOpen) {
+      return this.probeHttp(cleanHost, port, {
+        timeoutMs,
+        allowInsecureCertificates
+      });
     }
 
-    // Port is open: probe HTTP server
-    return this.probeHttp(host, port, {
-      timeoutMs,
-      allowInsecureCertificates
-    });
+    // 2. Dual-stack fallback: If primary loopback was closed, probe alternate family
+    if (PortProber.isLoopbackHost(cleanHost)) {
+      const lower = cleanHost.toLowerCase();
+      // If primary was IPv4 (127.0.0.1, etc.) or localhost, probe IPv6 loopback (::1).
+      // If primary was IPv6 (::1), probe IPv4 loopback (127.0.0.1).
+      const fallbackHost = lower === '::1' || lower === '0:0:0:0:0:0:0:1' ? '127.0.0.1' : '::1';
+
+      const isFallbackOpen = await this.isPortOpen(fallbackHost, port, timeoutMs);
+      if (isFallbackOpen) {
+        return this.probeHttp(fallbackHost, port, {
+          timeoutMs,
+          allowInsecureCertificates
+        });
+      }
+    }
+
+    return { port, isOpen: false, isHttp: false };
   }
 
   /**
