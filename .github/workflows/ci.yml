@@ -1,0 +1,58 @@
+name: DevMirror CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Build & Test (Node ${{ matrix.node-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+        node-version: [ 20.x, 22.x ]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Workspace typecheck
+        run: pnpm run typecheck
+
+      - name: Build all packages
+        run: pnpm run build
+
+      - name: Run test suite
+        run: pnpm test
+
+      - name: Package Chrome Extension
+        run: pnpm --filter @devmirror/extension run package
+
+      - name: Verify Extension Artifacts
+        shell: bash
+        run: |
+          test -f apps/extension/dist/devmirror-extension-webstore-v0.1.0.zip || exit 1
+          test -f apps/extension/dist/devmirror-extension-unpacked-v0.1.0.zip || exit 1
+          echo "Extension ZIP packages successfully verified."
