@@ -195,4 +195,71 @@ describe('Security Audit & Token Leakage Prevention', () => {
     const errorBody = await errorRes.text();
     expect(errorBody).not.toContain(session.token);
   });
+
+  describe('Upstream Cookie Sanitization (SEC-02)', () => {
+    it('must strip __devmirror_session cookie from forwarded HTTP requests while preserving application cookies', async () => {
+      const session = sessionManager.createSession({
+        target: { host: '127.0.0.1', port: targetPort, framework: 'vite', isHttps: false },
+        lanIp: '127.0.0.1',
+        proxyPort,
+        controlPort: 4100
+      });
+
+      const res = await fetch(`http://127.0.0.1:${proxyPort}/api/user`, {
+        headers: {
+          Cookie: `${SESSION_COOKIE_NAME}=${session.token}; app_session=valid_user_session_123; user_theme=dark`
+        }
+      });
+
+      expect(res.status).toBe(200);
+      expect(receivedUpstreamHttpHeaders.cookie).toBe('app_session=valid_user_session_123; user_theme=dark');
+      expect(receivedUpstreamHttpHeaders.cookie).not.toContain(session.token);
+      expect(receivedUpstreamHttpHeaders.cookie).not.toContain(SESSION_COOKIE_NAME);
+    });
+
+    it('must strip Cookie header completely if __devmirror_session was the only cookie', async () => {
+      const session = sessionManager.createSession({
+        target: { host: '127.0.0.1', port: targetPort, framework: 'vite', isHttps: false },
+        lanIp: '127.0.0.1',
+        proxyPort,
+        controlPort: 4100
+      });
+
+      const res = await fetch(`http://127.0.0.1:${proxyPort}/api/profile`, {
+        headers: {
+          Cookie: `${SESSION_COOKIE_NAME}=${session.token}`
+        }
+      });
+
+      expect(res.status).toBe(200);
+      expect(receivedUpstreamHttpHeaders.cookie).toBeUndefined();
+    });
+
+    it('must strip __devmirror_session cookie from forwarded WebSocket upgrade requests while preserving application cookies', async () => {
+      const session = sessionManager.createSession({
+        target: { host: '127.0.0.1', port: targetPort, framework: 'vite', isHttps: false },
+        lanIp: '127.0.0.1',
+        proxyPort,
+        controlPort: 4100
+      });
+
+      const client = new WebSocket(`ws://127.0.0.1:${proxyPort}/@vite-hmr`, {
+        origin: `http://127.0.0.1:${proxyPort}`,
+        headers: {
+          Cookie: `${SESSION_COOKIE_NAME}=${session.token}; app_ws_token=ws_secret_999`
+        }
+      });
+
+      await new Promise<void>((resolve) => {
+        client.on('open', () => {
+          client.close();
+          resolve();
+        });
+      });
+
+      expect(receivedUpstreamWsHeaders.cookie).toBe('app_ws_token=ws_secret_999');
+      expect(receivedUpstreamWsHeaders.cookie).not.toContain(session.token);
+      expect(receivedUpstreamWsHeaders.cookie).not.toContain(SESSION_COOKIE_NAME);
+    });
+  });
 });
