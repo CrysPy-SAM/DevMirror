@@ -11,11 +11,14 @@ import type net from 'node:net';
 import {
   SESSION_COOKIE_NAME,
   SESSION_QUERY_PARAM,
+  PUBLIC_AUTH_ENDPOINT,
   type TargetDevServer
 } from '@devmirror/shared';
 import type { SessionManager } from '../session/manager.js';
 import { HmrRegistry } from '../hmr/registry.js';
 import { HtmlRewriter } from '../html/rewriter.js';
+import type { PasswordAuthManager } from '../auth/password.js';
+import { renderPublicAuthPage } from '../auth/template.js';
 
 export interface LanProxyOptions {
   port: number;
@@ -23,6 +26,8 @@ export interface LanProxyOptions {
   sessionManager: SessionManager;
   target: TargetDevServer;
   enableOverlay?: boolean; // Default must be false!
+  passwordAuth?: PasswordAuthManager;
+  getTunnelUrl?: () => string | undefined;
 }
 
 export class LanProxyServer {
@@ -33,6 +38,8 @@ export class LanProxyServer {
   private target: TargetDevServer;
   private enableOverlay: boolean;
   private htmlRewriter: HtmlRewriter;
+  private passwordAuth?: PasswordAuthManager;
+  private readonly getTunnelUrl?: () => string | undefined;
 
   private server: http.Server | null = null;
   private isRunning: boolean = false;
@@ -45,6 +52,8 @@ export class LanProxyServer {
     this.sessionManager = options.sessionManager;
     this.target = { ...options.target };
     this.enableOverlay = options.enableOverlay ?? false; // Default: false!
+    this.passwordAuth = options.passwordAuth;
+    this.getTunnelUrl = options.getTunnelUrl;
 
     this.hmrRegistry = new HmrRegistry();
     this.htmlRewriter = new HtmlRewriter({
@@ -97,6 +106,17 @@ export class LanProxyServer {
   }
 
   /**
+   * Sets or updates the PasswordAuthManager instance for public access protection.
+   */
+  public setPasswordAuth(manager: PasswordAuthManager | null): void {
+    this.passwordAuth = manager ?? undefined;
+  }
+
+  public getPasswordAuth(): PasswordAuthManager | undefined {
+    return this.passwordAuth;
+  }
+
+  /**
    * Strips only the DevMirror session cookie (__devmirror_session) from the Cookie header,
    * preserving all target application cookies.
    */
@@ -145,12 +165,106 @@ export class LanProxyServer {
   }
 
   /**
-   * Core HTTP request dispatcher.
+   * Reads request body stream up to maxBytes.
    */
-  private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    const clientIp = req.socket.remoteAddress || 'unknown';
+  private async readRequestBody(req: IncomingMessage, maxBytes: number = 64 * 1024): Promise<string> {
+    return new Promise<string>((resolve, reject) => {
+      let data = '';
+      req.on('data', (chunk) => {
+        data += chunk.toString();
+        if (data.length > maxBytes) {
+          req.destroy();
+          reject(new Error('Request body exceeds maximum size limit'));
+        }
+      });
+      req.on('end', () => resolve(data));
+      req.on('error', (err) => reject(err));
+    });
+  }
+
+  /**
+   * Core HTTP request dispatcher supporting dual access (LAN QR pairing & Public Password Auth).
+   */
+  private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const clientIp =
+      (req.headers['cf-connecting-ip'] as string) ||
+      (req.headers['x-forwarded-for'] ? String(req.headers['x-forwarded-for']).split(',')[0].trim() : undefined) ||
+      req.socket.remoteAddress ||
+      'unknown';
     const userAgent = req.headers['user-agent'] || 'unknown';
     const reqUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const isHttps =
+      req.headers['x-forwarded-proto'] === 'https' ||
+      (typeof req.headers['cf-visitor'] === 'string' && req.headers['cf-visitor'].includes('"https"')) ||
+      Boolean((req.socket as any)?.encrypted);
+    const secureAttr = isHttps ? '; Secure' : '';
+
+    // A. Handle Public Password Authentication Endpoint (/__devmirror/auth)
+    if (reqUrl.pathname === PUBLIC_AUTH_ENDPOINT) {
+      if (req.method === 'POST') {
+        if (!this.passwordAuth) {
+          res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end('Password authentication is not configured');
+          return;
+        }
+
+        try {
+          const rawBody = await this.readRequestBody(req);
+          const params = new URLSearchParams(rawBody);
+          const password = params.get('password');
+          const returnTo = params.get('returnTo') || '/';
+          const safeReturnTo = returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/';
+
+          const authResult = this.passwordAuth.verify(password, clientIp);
+          if (authResult.success) {
+            let session = this.sessionManager.getSession();
+            if (!session) {
+              session = this.sessionManager.createSession({
+                target: this.target,
+                lanIp: '127.0.0.1',
+                proxyPort: this.assignedPort,
+                controlPort: 4100
+              });
+            }
+
+            this.sessionManager.registerDevice({ ip: clientIp, userAgent });
+
+            res.writeHead(302, {
+              Location: safeReturnTo,
+              'Set-Cookie': `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax${secureAttr}`,
+              'Cache-Control': 'no-store'
+            });
+            res.end();
+            return;
+          } else {
+            res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
+            res.end(
+              renderPublicAuthPage({
+                projectName: this.target.title || this.target.frameworkName,
+                errorMessage: authResult.error,
+                isLockedOut: authResult.lockedOut,
+                returnTo: safeReturnTo
+              })
+            );
+            return;
+          }
+        } catch (err: any) {
+          res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end(`Bad Request: ${err.message}`);
+          return;
+        }
+      } else {
+        // GET /__devmirror/auth
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(
+          renderPublicAuthPage({
+            projectName: this.target.title || this.target.frameworkName,
+            returnTo: reqUrl.searchParams.get('returnTo') || '/'
+          })
+        );
+        return;
+      }
+    }
 
     // 1. Check for token in query parameter (?dm_token=...)
     const queryToken = reqUrl.searchParams.get(SESSION_QUERY_PARAM);
@@ -162,7 +276,7 @@ export class LanProxyServer {
 
         res.writeHead(302, {
           Location: redirectPath,
-          'Set-Cookie': `${SESSION_COOKIE_NAME}=${encodeURIComponent(queryToken)}; Path=/; HttpOnly; SameSite=Lax`,
+          'Set-Cookie': `${SESSION_COOKIE_NAME}=${encodeURIComponent(queryToken)}; Path=/; HttpOnly; SameSite=Lax${secureAttr}`,
           'Cache-Control': 'no-store'
         });
         res.end();
@@ -179,8 +293,30 @@ export class LanProxyServer {
     const sessionCookie = cookies[SESSION_COOKIE_NAME];
 
     if (!sessionCookie || !this.sessionManager.validateCookie(sessionCookie)) {
-      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(this.renderUnauthorizedPage('Access Denied: Please scan the DevMirror QR code with your mobile device to connect.'));
+      // Check if this is an HTML navigation request
+      const acceptHeader = String(req.headers['accept'] || '').toLowerCase();
+      const isHtmlNav =
+        req.method === 'GET' &&
+        (acceptHeader.includes('text/html') || req.url === '/' || !req.url?.includes('.'));
+
+      if (this.passwordAuth && isHtmlNav) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(
+          renderPublicAuthPage({
+            projectName: this.target.title || this.target.frameworkName,
+            returnTo: req.url || '/'
+          })
+        );
+        return;
+      }
+
+      // If not HTML navigation or password auth disabled, reject unauthorized
+      res.writeHead(401, { 'Content-Type': isHtmlNav ? 'text/html; charset=utf-8' : 'text/plain; charset=utf-8' });
+      if (isHtmlNav) {
+        res.end(this.renderUnauthorizedPage('Access Denied: Please scan the DevMirror QR code with your mobile device to connect.'));
+      } else {
+        res.end('Unauthorized: Valid DevMirror session required');
+      }
       return;
     }
 
@@ -313,7 +449,15 @@ export class LanProxyServer {
     if (origin && origin !== 'null') {
       try {
         const originUrl = new URL(origin);
-        // Allow loopback, LAN IP, or Chrome Extension
+        const tunnelUrl = this.getTunnelUrl?.();
+        let tunnelHostname: string | undefined;
+        if (tunnelUrl) {
+          try {
+            tunnelHostname = new URL(tunnelUrl).hostname;
+          } catch {}
+        }
+
+        // Allow loopback, LAN IP, Chrome Extension, or Cloudflare Tunnel host
         const isAllowedOrigin =
           originUrl.hostname === '127.0.0.1' ||
           originUrl.hostname === 'localhost' ||
@@ -321,7 +465,9 @@ export class LanProxyServer {
           origin.startsWith('chrome-extension://') ||
           originUrl.hostname.startsWith('192.168.') ||
           originUrl.hostname.startsWith('10.') ||
-          (originUrl.hostname.startsWith('172.') && parseInt(originUrl.hostname.split('.')[1], 10) >= 16);
+          (originUrl.hostname.startsWith('172.') && parseInt(originUrl.hostname.split('.')[1], 10) >= 16) ||
+          originUrl.hostname.endsWith('.trycloudflare.com') ||
+          (tunnelHostname && originUrl.hostname === tunnelHostname);
 
         if (!isAllowedOrigin) {
           this.rejectWebSocket(clientSocket, 403, 'Forbidden: Invalid WebSocket Origin');
@@ -539,7 +685,14 @@ export class LanProxyServer {
     if (this.isRunning) return;
 
     return new Promise((resolve, reject) => {
-      this.server = http.createServer((req, res) => this.handleRequest(req, res));
+      this.server = http.createServer((req, res) => {
+        this.handleRequest(req, res).catch((err) => {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+            res.end(`Internal Server Error: ${err.message}`);
+          }
+        });
+      });
 
       // Handle WebSocket upgrades
       this.server.on('upgrade', (req, socket, head) => this.handleUpgrade(req, socket, head));
