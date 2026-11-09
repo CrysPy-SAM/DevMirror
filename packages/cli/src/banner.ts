@@ -16,6 +16,9 @@ export interface DisplayStatusOptions {
   qrCode: string;
   connectedDevices?: number;
   isFallbackIp?: boolean;
+  tunnelUrl?: string;
+  tunnelStatus?: string;
+  publicPassword?: string;
 }
 
 export class TerminalDisplay {
@@ -69,6 +72,18 @@ export class TerminalDisplay {
     // Fallback URL
     console.log(chalk.dim('  Or manually enter this URL on your phone:'));
     console.log(`  ${chalk.underline.cyan(status.mobileUrl)}\n`);
+
+    // Public Preview Tunnel (if enabled)
+    if (status.tunnelUrl) {
+      console.log(chalk.bold('  🌐 Public Preview (Cloudflare Tunnel):'));
+      console.log(`  ${chalk.bold('URL:')}          ${chalk.underline.cyan(status.tunnelUrl)}`);
+      if (status.publicPassword) {
+        console.log(`  ${chalk.bold('Password:')}     ${chalk.bold.yellow(status.publicPassword)}`);
+      }
+      console.log(chalk.dim('  (Secure password-protected preview accessible over the internet)\n'));
+    } else if (status.tunnelStatus === 'failed') {
+      console.log(chalk.yellow('  [!] Public Tunnel: Unavailable (cloudflared not detected or failed). LAN preview remains active.\n'));
+    }
 
     // Connected devices & Keyboard hints
     const deviceCount = status.connectedDevices ?? 0;
