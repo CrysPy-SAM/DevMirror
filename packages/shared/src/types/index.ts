@@ -107,3 +107,16 @@ export interface DevMirrorConfig {
   maxPayloadBytes: number;
   rateLimitPerMin: number;
 }
+
+export type TunnelStatus = 'idle' | 'starting' | 'connected' | 'failed' | 'stopped';
+
+export interface TunnelInfo {
+  status: TunnelStatus;
+  url?: string;
+  error?: string;
+}
+
+export interface PublicAuthInfo {
+  enabled: boolean;
+  password?: string;
+}

@@ -49,6 +49,7 @@ export const FRAMEWORK_HMR_PATHS = {
 
 export const COMPANION_OVERLAY_PATH = '/__devmirror/companion.js';
 export const COMPANION_WS_PATH = '/__devmirror/ws';
+export const PUBLIC_AUTH_ENDPOINT = '/__devmirror/auth';
 
 /**
  * Utility to redact sensitive tokens in application logs and diagnostics.
