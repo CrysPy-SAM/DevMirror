@@ -76,7 +76,9 @@ export async function runCli(argv: string[] = process.argv.slice(2)): Promise<nu
       preferredProxyPort: args.preferredProxyPort,
       preferredControlPort: args.preferredControlPort,
       enableOverlay: args.overlay,
-      enableKeyboardControls: true
+      enableKeyboardControls: true,
+      enableTunnel: args.tunnel,
+      tunnelPassword: args.password
     });
   } catch (err: any) {
     TerminalDisplay.printError('Startup Error', err.message);
