@@ -54,6 +54,15 @@ describe('CLI Arguments Parser', () => {
     expect(() => parseCliArgs(['--proxy-port', '99999'])).toThrow('Invalid --proxy-port');
   });
 
+  it('should parse tunnel and password flags', () => {
+    expect(parseCliArgs(['--tunnel']).tunnel).toBe(true);
+    expect(parseCliArgs(['-t']).tunnel).toBe(true);
+    expect(parseCliArgs(['--no-tunnel']).tunnel).toBe(false);
+    expect(parseCliArgs(['--password', 'secret123']).password).toBe('secret123');
+    expect(parseCliArgs(['-t', '--password', 'my-pass']).tunnel).toBe(true);
+    expect(parseCliArgs(['-t', '--password', 'my-pass']).password).toBe('my-pass');
+  });
+
   it('should reject unknown flags', () => {
     expect(() => parseCliArgs(['--foo'])).toThrow('CLI Argument Error');
   });
