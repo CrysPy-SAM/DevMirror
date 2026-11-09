@@ -5,6 +5,7 @@
 
 import type { TargetDevServer } from '@devmirror/shared';
 import type { IHmrAdapter } from './types.js';
+import { formatTargetHost } from '../network/host.js';
 
 export class CraHmrAdapter implements IHmrAdapter {
   public readonly framework = 'cra' as const;
@@ -31,9 +32,10 @@ export class CraHmrAdapter implements IHmrAdapter {
       }
     }
 
-    normalized['host'] = `${target.host}:${target.port}`;
+    const targetHostFormatted = formatTargetHost(target.host, target.port);
+    normalized['host'] = targetHostFormatted;
     const scheme = target.isHttps ? 'https' : 'http';
-    normalized['origin'] = `${scheme}://${target.host}:${target.port}`;
+    normalized['origin'] = `${scheme}://${targetHostFormatted}`;
 
     return normalized;
   }

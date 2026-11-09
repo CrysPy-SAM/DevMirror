@@ -61,7 +61,7 @@ export class ServerSelector {
 
     // 1. If manual port is explicitly provided via flag, validate and use it directly
     if (options.manualPort !== undefined) {
-      return this.validateAndBuildTarget(host, options.manualPort, allowInsecure);
+      return this.validateAndBuildTarget(host, options.manualPort, allowInsecure, options.manualHost);
     }
 
     // 2. Discover servers on local host
@@ -231,7 +231,8 @@ export class ServerSelector {
   private async validateAndBuildTarget(
     host: string,
     port: number,
-    allowInsecure: boolean
+    allowInsecure: boolean,
+    explicitHost?: string
   ): Promise<TargetDevServer> {
     const validated = await validateServer(host, port, {
       timeoutMs: 1000,
@@ -240,7 +241,7 @@ export class ServerSelector {
 
     if (validated) {
       return {
-        host: validated.host,
+        host: explicitHost || validated.host,
         port: validated.port,
         isHttps: validated.isHttps,
         framework: validated.framework,

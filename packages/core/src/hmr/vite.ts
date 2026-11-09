@@ -5,6 +5,7 @@
 
 import type { TargetDevServer } from '@devmirror/shared';
 import type { IHmrAdapter } from './types.js';
+import { formatTargetHost } from '../network/host.js';
 
 export class ViteHmrAdapter implements IHmrAdapter {
   public readonly framework = 'vite' as const;
@@ -26,8 +27,8 @@ export class ViteHmrAdapter implements IHmrAdapter {
       }
     }
 
-    // Rewrite Host to target
-    normalized['host'] = `${target.host}:${target.port}`;
+    // Rewrite Host to target host:port, formatting IPv6 with RFC-compliant brackets (e.g. [::1]:5173)
+    normalized['host'] = formatTargetHost(target.host, target.port);
 
     // Note: Do not inject artificial Origin if client did not send one, or let Vite accept local target
     delete normalized['origin'];

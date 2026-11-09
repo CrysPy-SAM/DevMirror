@@ -11,6 +11,7 @@ import { AngularHmrAdapter } from './angular.js';
 import { AstroHmrAdapter } from './astro.js';
 import { NuxtHmrAdapter } from './nuxt.js';
 import { CraHmrAdapter } from './cra.js';
+import { formatTargetHost } from '../network/host.js';
 
 export class HmrRegistry {
   private readonly adapters: Map<SupportedFramework, IHmrAdapter> = new Map();
@@ -60,9 +61,10 @@ export class HmrRegistry {
             normalized[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : String(value);
           }
         }
-        normalized['host'] = `${tgt.host}:${tgt.port}`;
+        const formattedTargetHost = formatTargetHost(tgt.host, tgt.port);
+        normalized['host'] = formattedTargetHost;
         const scheme = tgt.isHttps ? 'https' : 'http';
-        normalized['origin'] = `${scheme}://${tgt.host}:${tgt.port}`;
+        normalized['origin'] = `${scheme}://${formattedTargetHost}`;
         return normalized;
       }
     };

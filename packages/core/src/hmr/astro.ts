@@ -5,6 +5,7 @@
 
 import type { TargetDevServer } from '@devmirror/shared';
 import type { IHmrAdapter } from './types.js';
+import { formatTargetHost } from '../network/host.js';
 
 export class AstroHmrAdapter implements IHmrAdapter {
   public readonly framework = 'astro' as const;
@@ -26,7 +27,7 @@ export class AstroHmrAdapter implements IHmrAdapter {
       }
     }
 
-    normalized['host'] = `${target.host}:${target.port}`;
+    normalized['host'] = formatTargetHost(target.host, target.port);
     delete normalized['origin'];
 
     return normalized;

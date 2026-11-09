@@ -5,6 +5,7 @@
 
 import type { TargetDevServer } from '@devmirror/shared';
 import type { IHmrAdapter } from './types.js';
+import { formatTargetHost } from '../network/host.js';
 
 export class AngularHmrAdapter implements IHmrAdapter {
   public readonly framework = 'angular' as const;
@@ -31,7 +32,7 @@ export class AngularHmrAdapter implements IHmrAdapter {
       }
     }
 
-    normalized['host'] = `${target.host}:${target.port}`;
+    normalized['host'] = formatTargetHost(target.host, target.port);
     // Strip external origin so modern Vite-based Angular dev server accepts the connection
     delete normalized['origin'];
 

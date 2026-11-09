@@ -19,6 +19,7 @@ import { HmrRegistry } from '../hmr/registry.js';
 import { HtmlRewriter } from '../html/rewriter.js';
 import type { PasswordAuthManager } from '../auth/password.js';
 import { renderPublicAuthPage } from '../auth/template.js';
+import { formatTargetHost, cleanHostName } from '../network/host.js';
 
 export interface LanProxyOptions {
   port: number;
@@ -336,12 +337,13 @@ export class LanProxyServer {
 
     const forwardedHeaders: http.OutgoingHttpHeaders = { ...req.headers };
 
-    // Rewrite Host
-    forwardedHeaders.host = `${this.target.host}:${this.target.port}`;
+    // Rewrite Host to target host:port, formatting IPv6 with RFC-compliant brackets (e.g. [::1]:5173)
+    const targetHostFormatted = formatTargetHost(this.target.host, this.target.port);
+    forwardedHeaders.host = targetHostFormatted;
 
     // Normalize Origin and Referer
     if (forwardedHeaders.origin) {
-      forwardedHeaders.origin = `http${isTargetHttps ? 's' : ''}://${this.target.host}:${this.target.port}`;
+      forwardedHeaders.origin = `http${isTargetHttps ? 's' : ''}://${targetHostFormatted}`;
     }
 
     if (forwardedHeaders.referer) {
@@ -349,16 +351,28 @@ export class LanProxyServer {
         const refUrl = new URL(forwardedHeaders.referer as string);
         refUrl.searchParams.delete(SESSION_QUERY_PARAM);
         refUrl.protocol = isTargetHttps ? 'https:' : 'http:';
-        refUrl.host = `${this.target.host}:${this.target.port}`;
+        refUrl.host = targetHostFormatted;
         forwardedHeaders.referer = refUrl.toString();
       } catch {
         delete forwardedHeaders.referer;
       }
     }
 
-    forwardedHeaders['x-forwarded-for'] = req.socket.remoteAddress || '127.0.0.1';
-    forwardedHeaders['x-forwarded-host'] = req.headers.host || `${this.host}:${this.port}`;
-    forwardedHeaders['x-forwarded-proto'] = 'http';
+    const isHttps =
+      req.headers['x-forwarded-proto'] === 'https' ||
+      (typeof req.headers['cf-visitor'] === 'string' && req.headers['cf-visitor'].includes('"https"')) ||
+      Boolean((req.socket as any)?.encrypted);
+
+    const clientIp =
+      (req.headers['cf-connecting-ip'] as string) ||
+      (req.headers['x-forwarded-for'] ? String(req.headers['x-forwarded-for']).split(',')[0].trim() : undefined) ||
+      req.socket.remoteAddress ||
+      '127.0.0.1';
+
+    const originalHost = req.headers.host || `${this.host}:${this.assignedPort || this.port}`;
+    forwardedHeaders['x-forwarded-for'] = clientIp;
+    forwardedHeaders['x-forwarded-host'] = originalHost;
+    forwardedHeaders['x-forwarded-proto'] = isHttps ? 'https' : 'http';
 
     // Strip DevMirror session cookie so pairing token is never forwarded to target dev server
     const sanitizedCookie = LanProxyServer.stripSessionCookie(req.headers.cookie);
@@ -372,7 +386,7 @@ export class LanProxyServer {
     const sanitizedPath = this.stripTokenFromPath(req.url || '/');
 
     const requestOptions: http.RequestOptions = {
-      hostname: this.target.host,
+      hostname: cleanHostName(this.target.host),
       port: this.target.port,
       path: sanitizedPath,
       method: req.method,
@@ -524,18 +538,26 @@ export class LanProxyServer {
     const isTargetHttps = this.target.isHttps;
     const httpModule = isTargetHttps ? https : http;
 
+    const targetHostFormatted = formatTargetHost(this.target.host, this.target.port);
+    forwardedHeaders.host = targetHostFormatted;
+
     // Sanitize Referer to prevent pairing token leakage
     if (forwardedHeaders.referer) {
       try {
         const refUrl = new URL(forwardedHeaders.referer as string);
         refUrl.searchParams.delete(SESSION_QUERY_PARAM);
         refUrl.protocol = isTargetHttps ? 'https:' : 'http:';
-        refUrl.host = `${this.target.host}:${this.target.port}`;
+        refUrl.host = targetHostFormatted;
         forwardedHeaders.referer = refUrl.toString();
       } catch {
         delete forwardedHeaders.referer;
       }
     }
+
+    const originalHost = req.headers.host || `${this.host}:${this.assignedPort || this.port}`;
+    forwardedHeaders['x-forwarded-for'] = clientIp;
+    forwardedHeaders['x-forwarded-host'] = originalHost;
+    forwardedHeaders['x-forwarded-proto'] = (req.headers['x-forwarded-proto'] === 'https' || Boolean((req.socket as any)?.encrypted)) ? 'https' : 'http';
 
     // Strip DevMirror session cookie so pairing token is never forwarded to target dev server
     const sanitizedCookie = LanProxyServer.stripSessionCookie(req.headers.cookie);
@@ -552,7 +574,7 @@ export class LanProxyServer {
     const sanitizedWsPath = this.stripTokenFromPath(req.url || '/');
 
     const upstreamReq = httpModule.request({
-      hostname: this.target.host,
+      hostname: cleanHostName(this.target.host),
       port: this.target.port,
       path: sanitizedWsPath,
       method: 'GET',

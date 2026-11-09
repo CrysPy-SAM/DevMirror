@@ -5,6 +5,7 @@
 
 import type { TargetDevServer } from '@devmirror/shared';
 import type { IHmrAdapter } from './types.js';
+import { formatTargetHost } from '../network/host.js';
 
 export class NextjsHmrAdapter implements IHmrAdapter {
   public readonly framework = 'nextjs' as const;
@@ -26,9 +27,10 @@ export class NextjsHmrAdapter implements IHmrAdapter {
       }
     }
 
-    normalized['host'] = `${target.host}:${target.port}`;
+    const targetHostFormatted = formatTargetHost(target.host, target.port);
+    normalized['host'] = targetHostFormatted;
     const scheme = target.isHttps ? 'https' : 'http';
-    normalized['origin'] = `${scheme}://${target.host}:${target.port}`;
+    normalized['origin'] = `${scheme}://${targetHostFormatted}`;
 
     return normalized;
   }
