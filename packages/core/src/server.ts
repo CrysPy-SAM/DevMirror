@@ -8,13 +8,17 @@ import {
   DEFAULT_CONTROL_PORT,
   type TargetDevServer,
   type SessionInfo,
-  type SanitizedSessionInfo
+  type SanitizedSessionInfo,
+  type TunnelStatus,
+  type TunnelInfo
 } from '@devmirror/shared';
 import { SessionManager } from './session/manager.js';
 import { LanIpResolver } from './network/resolver.js';
 import { PortManager } from './network/port-manager.js';
 import { ControlApi } from './control/api.js';
 import { LanProxyServer } from './proxy/server.js';
+import { PasswordAuthManager } from './auth/password.js';
+import { CloudflareTunnel } from './tunnel/cloudflare.js';
 
 export interface DevMirrorEngineOptions {
   preferredProxyPort?: number;
@@ -25,6 +29,12 @@ export interface DevMirrorEngineOptions {
   enableGracefulShutdown?: boolean;
   allowedExtensionIds?: string[];
   onDiscover?: () => Promise<any[]>;
+  enableTunnel?: boolean;
+  tunnelPassword?: string;
+  cloudflaredPath?: string;
+  tunnelTimeoutMs?: number;
+  onTunnelStatusChange?: (status: TunnelStatus, url?: string, error?: string) => void;
+  tunnelSpawnFn?: any;
 }
 
 export class DevMirrorEngine {
@@ -35,6 +45,8 @@ export class DevMirrorEngine {
 
   private controlApi: ControlApi | null = null;
   private proxyServer: LanProxyServer | null = null;
+  private tunnel: CloudflareTunnel | null = null;
+  private passwordAuth: PasswordAuthManager | null = null;
   private activeProxyPort: number = 0;
   private activeControlPort: number = 0;
   private activeLanIp: string = '';
@@ -46,6 +58,12 @@ export class DevMirrorEngine {
     this.lanResolver = new LanIpResolver();
     this.portManager = new PortManager();
     this.sessionManager = new SessionManager(options.sessionTtlMs);
+
+    if (options.enableTunnel) {
+      this.passwordAuth = new PasswordAuthManager({
+        customPassword: options.tunnelPassword
+      });
+    }
 
     if (options.enableGracefulShutdown) {
       this.registerSignalHandlers();
@@ -61,6 +79,8 @@ export class DevMirrorEngine {
     proxyPort: number;
     controlPort: number;
     lanIp: string;
+    tunnelInfo: TunnelInfo;
+    publicPassword?: string;
   }> {
     if (this.isRunning) {
       throw new Error('DevMirror Engine is already running');
@@ -107,7 +127,9 @@ export class DevMirrorEngine {
         host: '0.0.0.0',
         sessionManager: this.sessionManager,
         target: this.options.target,
-        enableOverlay: this.options.enableOverlay ?? false
+        enableOverlay: this.options.enableOverlay ?? false,
+        passwordAuth: this.passwordAuth ?? undefined,
+        getTunnelUrl: () => this.tunnel?.publicUrl
       });
       await this.proxyServer.start();
       this.activeProxyPort = this.proxyServer.assignedPort;
@@ -120,14 +142,36 @@ export class DevMirrorEngine {
       });
     }
 
+    // 5. Start Cloudflare Quick Tunnel if enabled
+    let tunnelInfo: TunnelInfo = { status: 'idle' };
+    if (this.options.enableTunnel) {
+      this.tunnel = new CloudflareTunnel({
+        proxyPort: this.activeProxyPort,
+        cloudflaredPath: this.options.cloudflaredPath,
+        timeoutMs: this.options.tunnelTimeoutMs,
+        onStatusChange: this.options.onTunnelStatusChange,
+        spawnFn: this.options.tunnelSpawnFn
+      });
+
+      try {
+        await this.tunnel.start();
+        tunnelInfo = this.tunnel.getInfo();
+      } catch (err: any) {
+        // Tunnel failed, but existing LAN access continues operating smoothly
+        tunnelInfo = this.tunnel.getInfo();
+      }
+    }
+
     this.isRunning = true;
 
     return {
       session,
       sanitizedSession: this.sessionManager.getSanitizedSession(),
-      proxyPort,
-      controlPort,
-      lanIp: this.activeLanIp
+      proxyPort: this.activeProxyPort,
+      controlPort: this.activeControlPort,
+      lanIp: this.activeLanIp,
+      tunnelInfo,
+      publicPassword: this.passwordAuth?.getInitialPassword()
     };
   }
 
@@ -160,7 +204,9 @@ export class DevMirrorEngine {
         host: '0.0.0.0',
         sessionManager: this.sessionManager,
         target,
-        enableOverlay: this.options.enableOverlay ?? false
+        enableOverlay: this.options.enableOverlay ?? false,
+        passwordAuth: this.passwordAuth ?? undefined,
+        getTunnelUrl: () => this.tunnel?.publicUrl
       });
       await this.proxyServer.start();
     }
@@ -173,6 +219,11 @@ export class DevMirrorEngine {
    */
   public async stop(): Promise<void> {
     if (!this.isRunning) return;
+
+    if (this.tunnel) {
+      await this.tunnel.stop();
+      this.tunnel = null;
+    }
 
     if (this.proxyServer) {
       await this.proxyServer.stop();
@@ -216,6 +267,14 @@ export class DevMirrorEngine {
 
   public get lanIp(): string {
     return this.activeLanIp;
+  }
+
+  public getTunnelInfo(): TunnelInfo {
+    return this.tunnel?.getInfo() ?? { status: 'idle' };
+  }
+
+  public getPublicPassword(): string | undefined {
+    return this.passwordAuth?.getInitialPassword();
   }
 
   public get proxyPort(): number {
