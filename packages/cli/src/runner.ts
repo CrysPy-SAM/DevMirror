@@ -17,6 +17,8 @@ export interface CliRunnerOptions {
   preferredControlPort?: number;
   enableOverlay?: boolean;
   enableKeyboardControls?: boolean;
+  enableTunnel?: boolean;
+  tunnelPassword?: string;
 }
 
 export class DevMirrorCliRunner {
@@ -36,6 +38,8 @@ export class DevMirrorCliRunner {
     controlPort: number;
     lanIp: string;
     qrCode: string;
+    tunnelUrl?: string;
+    publicPassword?: string;
   }> {
     if (this.isRunning) {
       throw new Error('DevMirror CLI Runner is already running');
@@ -48,6 +52,8 @@ export class DevMirrorCliRunner {
       enableOverlay: options.enableOverlay ?? false,
       enableGracefulShutdown: false, // Managed by runner directly
       allowedExtensionIds: [DEVMIRROR_DEV_EXTENSION_ID],
+      enableTunnel: options.enableTunnel,
+      tunnelPassword: options.tunnelPassword,
       onDiscover: async () => {
         const scanner = new DevServerScanner();
         return scanner.scan();
@@ -93,7 +99,10 @@ export class DevMirrorCliRunner {
       mobileUrl,
       qrCode,
       connectedDevices: 0,
-      isFallbackIp: lanIp === '127.0.0.1'
+      isFallbackIp: lanIp === '127.0.0.1',
+      tunnelUrl: startResult.tunnelInfo?.url,
+      tunnelStatus: startResult.tunnelInfo?.status,
+      publicPassword: startResult.publicPassword
     });
 
     this.isRunning = true;
@@ -111,7 +120,9 @@ export class DevMirrorCliRunner {
       proxyPort,
       controlPort,
       lanIp,
-      qrCode
+      qrCode,
+      tunnelUrl: startResult.tunnelInfo?.url,
+      publicPassword: startResult.publicPassword
     };
   }
 
